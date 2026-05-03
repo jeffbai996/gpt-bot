@@ -1,23 +1,24 @@
 # gpt-discord-bot
 
-OpenAI-backed Discord bot. Standalone TypeScript daemon. Sibling project to [gem-discord-bot](https://github.com/) — same shape, different brain.
+OpenAI-backed Discord bot. Standalone TypeScript daemon. Sibling project to [gem-discord-bot](https://github.com/) — same shape, different brain, designed to coexist in the same guild without looping.
 
-> **Status:** v0.1 scaffold. No runtime code yet. See [CHANGELOG.md](./CHANGELOG.md) for the planned epochs.
+> **Status:** v0.10 — feature-complete first pass. See [CHANGELOG.md](./CHANGELOG.md) for the per-epoch breakdown.
 
-## What it will do (when built out)
+## What it does
 
-- Chat in allowlisted Discord channels using `gpt-5.5` by default.
-- Per-channel model switch between `gpt-5.5`, `gpt-5.4-mini`, `o3`.
-- Multimodal input — images, audio, documents.
-- Tool use — web search, URL fetch, semantic memory over channel history, optional MCP integrations.
-- Lifecycle reactions on user messages (`👀 → 🤔 → ✅`) so the bot is legible while it thinks.
-- Reaction-driven actions on its own replies (regenerate, expand, pin, delete, mute, edit).
+- **Chat** in allowlisted Discord channels. Per-channel model switch between `gpt-5.5` (default), `gpt-5.4-mini`, `o3`. Reasoning effort tunable for the o-series.
+- **Streaming** replies edit a `💭 thinking…` placeholder in place as tokens arrive.
+- **Multimodal** — images via OpenAI vision; audio transcribed via whisper; text/code files inlined; PDFs / video surfaced as `[attachments not ingested]` so the model knows about them.
+- **Tools** — `fetch_url` (with SSRF guard, Readability extraction), `web_search` (via search-preview model side-call), `search_memory` (semantic recall over channel history), and any MCP server's tools (auto-registered via streamable-HTTP).
+- **Lifecycle reactions** — `👀 received → 🤔 thinking → ✅ replied`, with branches for `📎 ingesting`, `🌐 searching`, `🔧 tooling`, `✂️ truncated`, `🛑 blocked`, `⚠️ denied`, `❌ errored`.
+- **Reaction-driven actions** — user reactions on the bot's replies trigger 🔁 regenerate, 🔍 expand, 📌 pin (per-channel pinned-facts file injected into system prompt), ❌ delete, 🔇/🔊 mute toggle, ✏️ edit-on-next-message.
+- **Persistent semantic memory** — every allowed user message gets embedded (`text-embedding-3-small`) and stored in sqlite-vss. Background summarization rolls older messages into a per-channel summary that sits above the active history in the system prompt.
 
 ## What makes this different from gem-discord-bot
 
-Same architectural pattern, different model family. Designed to run alongside gem in the same guild without double-replies — both bots ignore each other via `message.author.bot`.
+Same architectural pattern, different model family. Two bots can run in the same guild without double-replies — both ignore each other via `message.author.bot`.
 
-Use this one when you want OpenAI's reasoning models (o3) or its specific tool-use shape (Responses API + function calling). Use gem when you want Gemini's native multimodal grounding or long-context behavior.
+Use this one when you want OpenAI's reasoning models or its specific tool-use shape. Use gem when you want Gemini's native multimodal grounding or long-context behavior.
 
 ## Getting started
 
@@ -25,11 +26,36 @@ Use this one when you want OpenAI's reasoning models (o3) or its specific tool-u
 git clone <this-repo>
 cd gpt-discord-bot
 npm install
-cp .env.example .env  # fill in OPENAI_API_KEY, DISCORD_BOT_TOKEN, DISCORD_APP_ID
+cp .env.example ~/.gpt/channels/discord/.env
+# Fill in OPENAI_API_KEY, DISCORD_BOT_TOKEN, DISCORD_APP_ID
 npm run start
 ```
 
-State lives in `~/.gpt/channels/discord/` by default. Override with `GPT_STATE_DIR`.
+State (allowlist, persona, embeddings DB, summaries, pinned facts) lives at `~/.gpt/channels/discord/` by default. Override with `GPT_STATE_DIR`.
+
+### Slash commands
+
+- `/gpt allow <user>` — add a user to the allowlist.
+- `/gpt revoke <user>` — remove access.
+- `/gpt channel <channel> <enabled> <require_mention>` — configure channel access.
+- `/gpt persona <filename>` — hot-swap the persona file (loaded from state dir).
+- `/gpt set <flag> <value> [<channel>]` — per-channel `model`, `reasoning`, `show_code`, or `verbose`.
+- `/gpt compact [<channel>]` — force a context-summary rollup now.
+
+SIGHUP reloads `access.json` and `persona.md` without a restart.
+
+### Runtime
+
+- Node.js 22+ recommended. Native modules (`better-sqlite3`, `sqlite-vss`, `jsdom`) gracefully degrade on older versions: the bot still runs, just without the affected feature (RAG / HTML extraction).
+- Designed to run as a systemd user service. Hot-reload of access + persona via SIGHUP.
+
+## Tests
+
+```bash
+node --test --import tsx tests/*.test.ts
+```
+
+66/67 passing on the dev box (1 skipped — Node 18 ABI mismatch on the jsdom-touching HTML extraction test).
 
 ## License
 

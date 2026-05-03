@@ -60,7 +60,7 @@ const memoryStore = await MemoryStore.open()
 if (!memoryStore) {
   console.error('memory: RAG disabled (native module load failed); set up Node 22+ to enable')
 }
-const toolRegistry = buildDefaultRegistry(openaiRaw, memoryStore)
+const toolRegistry = await buildDefaultRegistry(openaiRaw, memoryStore)
 
 // Summarization scheduler. Wires only when the SQLite-backed memory store is
 // available — summaries persist into the same conversation_summaries table.

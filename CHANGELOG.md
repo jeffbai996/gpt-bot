@@ -6,6 +6,18 @@ Tags are annotated; check them out with `git checkout v0.N` to inspect that poin
 
 ---
 
+## v0.10 — MCP autoload
+
+Auto-discovers and registers tools exposed by an external MCP server, transparently bridging MCP → OpenAI function-calls. The bot can now talk to a broker integration (or any MCP service) without per-tool wiring.
+
+- `src/tools/mcp-client.ts` — connects to a streamable-HTTP MCP endpoint via `@modelcontextprotocol/sdk`.
+- `src/tools/mcp-schema.ts` — `mcpSchemaToOpenAI()` converts MCP JSON Schema to the shape OpenAI's function-calling expects. Handles nullable type unions (`["string", "null"]` → `"string"`), drops unrepresentable properties (anyOf/oneOf), preserves description/enum/required.
+- `src/tools/mcp-tools.ts` — `loadMcpTools(client)` enumerates server tools and wraps each as a bot Tool whose `execute()` forwards to `client.callTool` and joins text content blocks into a single string.
+- `src/tools/mcp-unreachable-stub.ts` — `makeUnreachableStub(label)` returns a stub Tool registered when MCP connect fails at boot. Gives the model a valid surface to call when asked, instead of hallucinating MCP tool names.
+- `buildDefaultRegistry()` becomes async; opt-in via `GPT_MCP_URL` env. Friendly label override via `GPT_MCP_LABEL`.
+- Bot is generic — works with any MCP server, not just IBKR. Boot log surfaces the registered count.
+- 6 new tests cover the schema converter (simple object, nullable collapse, anyOf rejection, array items, root-must-be-object, description/enum preservation).
+
 ## v0.9 — summarization scheduler
 
 Persistent rolling per-channel summaries, injected into the system prompt for older context. Lets the bot remember channels with thousands of messages without overflowing the prompt window.
