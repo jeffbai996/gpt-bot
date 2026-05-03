@@ -6,6 +6,20 @@ Tags are annotated; check them out with `git checkout v0.N` to inspect that poin
 
 ---
 
+## v0.6 — ToolRegistry + web_search + fetch_url
+
+Pluggable function-calling tools. The model can now decide it needs to read a URL or search the web, and the tool loop dispatches the call, feeds results back, and lets the model compose its final reply from the gathered context.
+
+- `src/tools/registry.ts` — `ToolRegistry` with `register()` / `dispatch()` / `toOpenAITools()`. The latter wraps registered tools in OpenAI's `{ type: 'function', function: {…} }` shape ready to splice into a Chat Completions request.
+- `src/tools/fetch-url.ts` + `fetch-url-internal.ts` — fetches a URL with: SSRF guard (resolve hostname, refuse private IP ranges incl. IPv4/IPv6/IPv4-mapped), 15s timeout, 5MB body cap, content-type-aware extraction (HTML via Readability+JSDOM, JSON pretty-print, text/markdown passthrough). Output capped at 8000 chars by default, hard cap 50000.
+- `src/tools/web-search.ts` — `web_search(query)` runs a side-call to `gpt-4o-mini-search-preview` (configurable via `GPT_SEARCH_MODEL` env) so the main model can ground on Bing-search results without being promoted to a search-preview variant for every turn.
+- `OpenAIClient.respond()` gains a tool loop: when `toolRegistry` is supplied and non-empty, the request includes `tools` + `tool_choice: 'auto'`, drops `response_format` for that turn (incompatible with tool_calls), and iterates until a non-tool finish reason. Capped at 5 iterations. Each tool dispatch fires `tool_start`/`tool_end` lifecycle events; `web_search` specifically fires `searching` so the bot reacts 🌐 instead of 🔧.
+- `gpt.ts` wires the lifecycle handler to render 🌐 (searching) and 🔧 (tooling) on the user's message.
+- jsdom + readability are dynamically imported so the rest of the test suite stays green on Node versions that don't satisfy jsdom's modern-ArrayBuffer requirements (Node 22+ for the actual HTML pipeline).
+- 14 new tests cover registry behavior, IPv4/IPv6 SSRF guard, scheme rejection, content extraction, and the public fetch_url tool surface.
+
+Verified end-to-end live: gpt-5.5 successfully called `fetch_url("https://example.com")`, ingested the page, and composed a grounded reply.
+
 ## v0.5 — multimodal + DM intent
 
 Adds image understanding, audio transcription, text-file extraction, and DM channel support.

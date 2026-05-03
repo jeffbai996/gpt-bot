@@ -11,6 +11,7 @@ import type { LifecycleEvent } from './openai.ts'
 import { fetchHistory, formatHistoryForOpenAI } from './history.ts'
 import { processAttachments } from './attachments.ts'
 import { applyLifecycle } from './reactions/lifecycle.ts'
+import { buildDefaultRegistry } from './tools/index.ts'
 import OpenAI from 'openai'
 
 const STATE_DIR = process.env.GPT_STATE_DIR || path.join(os.homedir(), '.gpt', 'channels', 'discord')
@@ -38,9 +39,10 @@ const ADMIN_USER_ID: string | undefined = process.env.DISCORD_ADMIN_USER_ID
 const access = new AccessManager()
 const persona = new PersonaLoader()
 const openai = new OpenAIClient(OPENAI_KEY, DEFAULT_MODEL)
-// Raw SDK client for non-chat endpoints (audio.transcriptions). Sharing the
-// same key/instance avoids spinning up two HTTP pools.
+// Raw SDK client for non-chat endpoints (audio.transcriptions, web-search
+// side-call). Sharing the same key/instance avoids spinning up two HTTP pools.
 const openaiRaw = new OpenAI({ apiKey: OPENAI_KEY })
+const toolRegistry = buildDefaultRegistry(openaiRaw)
 
 await access.load()
 await persona.load()
@@ -166,6 +168,14 @@ client.on('messageCreate', async (message: Message) => {
       void applyLifecycle(message, 'thinking')
       return
     }
+    if (event.type === 'searching') {
+      void applyLifecycle(message, 'searching')
+      return
+    }
+    if (event.type === 'tool_start') {
+      void applyLifecycle(message, 'tooling')
+      return
+    }
     if (event.type === 'partial' && placeholder) {
       const now = Date.now()
       if (now - lastEditAt < EDIT_INTERVAL_MS) return
@@ -192,6 +202,9 @@ client.on('messageCreate', async (message: Message) => {
       reasoningEffort: flags.reasoning,
       imageParts,
       extraText,
+      toolRegistry,
+      channelId,
+      userId,
       onEvent
     })
 

@@ -1,4 +1,5 @@
 import OpenAI from 'openai'
+import type { ToolRegistry } from './tools/registry.ts'
 
 export interface ParsedResponse {
   react: string | null   // optional emoji to add to the user's message
@@ -10,6 +11,9 @@ export type LifecycleEvent =
   | { type: 'reasoning_start' }   // first reasoning_summary token (o-series)
   | { type: 'first_token' }       // first content token observed
   | { type: 'partial', reply: string }  // incremental reply (best-effort)
+  | { type: 'tool_start', name: string }
+  | { type: 'tool_end', name: string }
+  | { type: 'searching' }         // web_search in flight (special-cased)
   | { type: 'done' }
 
 export interface RespondInput {
@@ -24,6 +28,12 @@ export interface RespondInput {
   // transcripts, file extracts, "skipped" notices).
   imageParts?: OpenAI.Chat.Completions.ChatCompletionContentPartImage[]
   extraText?: string
+  // When set, the model is offered the registry's tools and the loop runs
+  // multi-turn until it emits a final assistant message. Each tool dispatch
+  // emits tool_start/tool_end lifecycle events.
+  toolRegistry?: ToolRegistry
+  channelId?: string
+  userId?: string
   onEvent?: (event: LifecycleEvent) => void
 }
 
@@ -82,11 +92,9 @@ export class OpenAIClient {
   }
 
   async respond(input: RespondInput): Promise<RespondResult> {
-    const { systemPrompt, history, userMessage, userName, model, reasoningEffort, imageParts, extraText, onEvent } = input
+    const { systemPrompt, history, userMessage, userName, model, reasoningEffort, imageParts, extraText, toolRegistry, channelId, userId, onEvent } = input
     const start = Date.now()
 
-    // Build the user message. Text-only path stays a plain string for legacy
-    // shape compatibility. Multimodal path uses the content-parts array.
     const userText = extraText
       ? `${userName}: ${userMessage}\n\n${extraText}`
       : `${userName}: ${userMessage}`
@@ -103,86 +111,162 @@ export class OpenAIClient {
     ]
 
     const reasoning = isReasoningModel(model)
-
-    // SDK 4.104 ReasoningEffort union is 'low' | 'medium' | 'high'. We accept
-    // 'minimal' from the channel-flag layer as a forward-compat sentinel and
-    // collapse it to 'low' here until the SDK catches up.
+    const gpt5 = isGpt5Family(model)
     const sdkEffort: 'low' | 'medium' | 'high' =
       reasoningEffort === 'minimal' ? 'low'
         : reasoningEffort === 'high' ? 'high'
         : reasoningEffort === 'low' ? 'low'
         : 'medium'
-
-    onEvent?.({ type: 'thinking_start' })
-
-    // Param shape per model family:
-    //   o-series (o1*/o3*/o4*): reasoning_effort + max_completion_tokens, no temperature
-    //   gpt-5.x: max_completion_tokens, no temperature (locked at default 1.0)
-    //   anything else (legacy gpt-4.x etc.): max_tokens + temperature OK
-    const gpt5 = isGpt5Family(model)
     const familyParams = reasoning
       ? { reasoning_effort: sdkEffort, max_completion_tokens: 4096 }
       : gpt5
         ? { max_completion_tokens: 4096 }
         : { temperature: 0.7, max_tokens: 4096 }
 
+    const tools = toolRegistry && toolRegistry.size() > 0 ? toolRegistry.toOpenAITools() : undefined
+
+    onEvent?.({ type: 'thinking_start' })
+
+    let totalUsage: RespondResult['usage'] = null
+    let modelUsed = model
+    let lastFinish: string | null = null
+    const MAX_LOOPS = 5
+
     try {
-      const stream = await this.client.chat.completions.create({
-        model,
-        messages,
-        response_format: { type: 'json_object' },
-        stream: true,
-        stream_options: { include_usage: true },
-        ...familyParams
-      })
-
-      let accumulated = ''
-      let finishReason: string | null = null
-      let usage: RespondResult['usage'] = null
-      let modelUsed = model
-      let firstTokenSeen = false
-      let lastPartialEmit = ''
-
-      for await (const chunk of stream) {
-        if (chunk.model) modelUsed = chunk.model
-        const choice = chunk.choices?.[0]
-        if (choice) {
-          const delta = (choice.delta as { content?: string | null })?.content
-          if (delta) {
-            accumulated += delta
-            if (!firstTokenSeen) {
-              firstTokenSeen = true
-              onEvent?.({ type: 'first_token' })
-            }
-            // Best-effort incremental reply extraction. Emit `partial` events
-            // when the in-progress `"reply": "..."` substring grows by
-            // enough to be worth a Discord edit. The caller throttles edits.
-            const partial = extractPartialReply(accumulated)
-            if (partial && partial !== lastPartialEmit) {
-              lastPartialEmit = partial
-              onEvent?.({ type: 'partial', reply: partial })
-            }
-          }
-          if (choice.finish_reason) finishReason = choice.finish_reason
+      for (let iter = 0; iter < MAX_LOOPS; iter++) {
+        // Stream one round-trip. JSON-mode is incompatible with tool-calls in
+        // many models; only enforce it on the FINAL turn (when the assistant
+        // emits content rather than tool_calls). We approximate this by only
+        // requesting `response_format` when no tools are bound — the loop
+        // unbinds tools on the final turn after dispatching whatever the
+        // model asked for.
+        //
+        // But that's fragile. Simpler: when tools are bound, we ask for
+        // tool-call OR free text (no json_object), and only impose JSON
+        // output via the system-prompt instruction. The parser handles
+        // free-text → "all reply" fallback already.
+        const reqBody: OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming = {
+          model,
+          messages,
+          stream: true,
+          stream_options: { include_usage: true },
+          ...familyParams,
+          ...(tools ? { tools, tool_choice: 'auto' } : { response_format: { type: 'json_object' } })
         }
-        if (chunk.usage) {
-          usage = {
-            inputTokens: chunk.usage.prompt_tokens ?? 0,
-            outputTokens: chunk.usage.completion_tokens ?? 0,
-            totalTokens: chunk.usage.total_tokens ?? 0
+
+        const stream = await this.client.chat.completions.create(reqBody)
+
+        let contentAcc = ''
+        let toolCallAcc: Map<number, { id: string; name: string; args: string }> = new Map()
+        let firstTokenSeen = false
+        let lastPartialEmit = ''
+        let finishReason: string | null = null
+
+        for await (const chunk of stream) {
+          if (chunk.model) modelUsed = chunk.model
+          const choice = chunk.choices?.[0]
+          if (choice) {
+            const delta = choice.delta as {
+              content?: string | null
+              tool_calls?: Array<{
+                index: number
+                id?: string
+                function?: { name?: string; arguments?: string }
+              }>
+            }
+            if (delta?.content) {
+              contentAcc += delta.content
+              if (!firstTokenSeen) {
+                firstTokenSeen = true
+                onEvent?.({ type: 'first_token' })
+              }
+              const partial = extractPartialReply(contentAcc)
+              if (partial && partial !== lastPartialEmit) {
+                lastPartialEmit = partial
+                onEvent?.({ type: 'partial', reply: partial })
+              }
+            }
+            if (delta?.tool_calls) {
+              for (const tc of delta.tool_calls) {
+                const idx = tc.index
+                const existing = toolCallAcc.get(idx) ?? { id: '', name: '', args: '' }
+                if (tc.id) existing.id = tc.id
+                if (tc.function?.name) existing.name = tc.function.name
+                if (tc.function?.arguments) existing.args += tc.function.arguments
+                toolCallAcc.set(idx, existing)
+              }
+            }
+            if (choice.finish_reason) finishReason = choice.finish_reason
           }
+          if (chunk.usage) {
+            const u = {
+              inputTokens: chunk.usage.prompt_tokens ?? 0,
+              outputTokens: chunk.usage.completion_tokens ?? 0,
+              totalTokens: chunk.usage.total_tokens ?? 0
+            }
+            // Accumulate across iterations; later turns add to earlier ones.
+            totalUsage = totalUsage
+              ? {
+                  inputTokens: totalUsage.inputTokens + u.inputTokens,
+                  outputTokens: totalUsage.outputTokens + u.outputTokens,
+                  totalTokens: totalUsage.totalTokens + u.totalTokens
+                }
+              : u
+          }
+        }
+
+        lastFinish = finishReason
+
+        // No tool calls → final answer.
+        if (toolCallAcc.size === 0 || finishReason !== 'tool_calls') {
+          onEvent?.({ type: 'done' })
+          const parsed = parseStructuredReply(contentAcc)
+          return {
+            react: parsed.react,
+            reply: parsed.reply,
+            usage: totalUsage,
+            finishReason: lastFinish,
+            durationMs: Date.now() - start,
+            modelUsed
+          }
+        }
+
+        // Tool calls present. Append the assistant's tool-call message to
+        // history, dispatch each tool, append results, then loop.
+        const toolCalls = [...toolCallAcc.entries()].sort((a, b) => a[0] - b[0]).map(([_, v]) => v)
+        messages.push({
+          role: 'assistant',
+          content: contentAcc || null,
+          tool_calls: toolCalls.map(tc => ({
+            id: tc.id || `call_${Math.random().toString(36).slice(2, 10)}`,
+            type: 'function' as const,
+            function: { name: tc.name, arguments: tc.args || '{}' }
+          }))
+        })
+
+        for (const tc of toolCalls) {
+          if (!toolRegistry) break
+          const isSearch = tc.name === 'web_search'
+          onEvent?.({ type: isSearch ? 'searching' : 'tool_start', name: tc.name } as LifecycleEvent)
+          let parsedArgs: Record<string, unknown> = {}
+          try { parsedArgs = JSON.parse(tc.args || '{}') } catch { /* empty args */ }
+          const result = await toolRegistry.dispatch(tc.name, parsedArgs, { channelId, userId })
+          onEvent?.({ type: 'tool_end', name: tc.name })
+          messages.push({
+            role: 'tool',
+            tool_call_id: tc.id || `call_${Math.random().toString(36).slice(2, 10)}`,
+            content: result
+          })
         }
       }
 
+      // Hit MAX_LOOPS without a final answer.
       onEvent?.({ type: 'done' })
-
-      const parsed = parseStructuredReply(accumulated)
-
       return {
-        react: parsed.react,
-        reply: parsed.reply,
-        usage,
-        finishReason,
+        react: null,
+        reply: '⚠️ tool loop exceeded 5 iterations without a final answer',
+        usage: totalUsage,
+        finishReason: lastFinish ?? 'tool_loop_exhausted',
         durationMs: Date.now() - start,
         modelUsed
       }
