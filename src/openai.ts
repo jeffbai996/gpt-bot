@@ -53,10 +53,18 @@ The "reply" field is the message body posted to the channel; it may use Markdown
 If you have nothing to say (no reply and no react), return {"react": null, "reply": ""}.
 `.trim()
 
-// o-series models use a different parameter shape (no `temperature`,
-// `reasoning_effort` is meaningful). gpt-5.x accepts standard params.
+// o-series models accept `reasoning_effort` and reject `temperature`.
 function isReasoningModel(model: string): boolean {
   return model.startsWith('o1') || model.startsWith('o3') || model.startsWith('o4')
+}
+
+// gpt-5.x rejects custom `temperature` (only default 1.0 is supported) and
+// rejects `max_tokens` in favor of `max_completion_tokens`. The o-series has
+// the same `max_completion_tokens` requirement. Only legacy gpt-4.x models
+// still accept the old `max_tokens` + custom temperature shape — and we don't
+// expose those in the channel flag, so just key off model prefix.
+function isGpt5Family(model: string): boolean {
+  return model.startsWith('gpt-5')
 }
 
 export class OpenAIClient {
@@ -91,6 +99,17 @@ export class OpenAIClient {
 
     onEvent?.({ type: 'thinking_start' })
 
+    // Param shape per model family:
+    //   o-series (o1*/o3*/o4*): reasoning_effort + max_completion_tokens, no temperature
+    //   gpt-5.x: max_completion_tokens, no temperature (locked at default 1.0)
+    //   anything else (legacy gpt-4.x etc.): max_tokens + temperature OK
+    const gpt5 = isGpt5Family(model)
+    const familyParams = reasoning
+      ? { reasoning_effort: sdkEffort, max_completion_tokens: 4096 }
+      : gpt5
+        ? { max_completion_tokens: 4096 }
+        : { temperature: 0.7, max_tokens: 4096 }
+
     try {
       const stream = await this.client.chat.completions.create({
         model,
@@ -98,9 +117,7 @@ export class OpenAIClient {
         response_format: { type: 'json_object' },
         stream: true,
         stream_options: { include_usage: true },
-        ...(reasoning
-          ? { reasoning_effort: sdkEffort }
-          : { temperature: 0.7, max_tokens: 4096 })
+        ...familyParams
       })
 
       let accumulated = ''
