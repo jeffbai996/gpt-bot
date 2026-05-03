@@ -6,6 +6,16 @@ Tags are annotated; check them out with `git checkout v0.N` to inspect that poin
 
 ---
 
+## v0.3 — openai SDK + minimum viable bot
+
+First version that actually talks to OpenAI. Non-streaming, no tools, no multimodal — just system prompt + history + user message → reply.
+
+- `src/openai.ts` — `OpenAIClient.respond()` returns structured `{ react, reply, usage, finishReason, durationMs, modelUsed }`. Uses Chat Completions with `response_format: { type: "json_object" }` for the structured shape. Reasoning models (`o1*`/`o3*`/`o4*`) use `reasoning_effort` instead of `temperature`+`max_tokens`. `'minimal'` reasoning collapses to `'low'` until the SDK catches up.
+- `src/history.ts` — `fetchHistory()` pulls the most recent 30 Discord messages before the current one. `formatHistoryForOpenAI()` converts to Chat Completions message shape, mapping bot messages to `assistant` and everyone else to `user` (author name prefixed inside content). `stripBotMetadata()` drops `-#` footer lines from the bot's past replies before feeding back so the model doesn't pattern-match its own footer format.
+- `OpenAIRequestRejected` typed exception for rate-limit/quota and content-policy refusals — emitted as `⚠️` instead of `❌` in the user-facing error.
+- `gpt.ts` — placeholder `💭 thinking…` reply, edits to the final response on completion. Silent-exit if model returns empty `{react: null, reply: ""}`. Verbose footer (`-# ↑ N · ↓ N · » Ns · model`) when channel flag enables it.
+- Tests: `parseStructuredReply` covers happy path, code-fence stripping, trailing prose, malformed input.
+
 ## v0.2 — discord layer (echo-only, no LLM)
 
 Builds the discord plumbing end-to-end without yet wiring up an OpenAI client. Lets you verify gateway, intents, allowlist, mention rules, slash-command admin flow, and chunking before any model spend.

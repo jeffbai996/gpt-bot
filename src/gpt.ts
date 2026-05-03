@@ -1,4 +1,4 @@
-import { Client, GatewayIntentBits, Partials, ActivityType, REST, Routes, type Message } from 'discord.js'
+import { Client, GatewayIntentBits, Partials, ActivityType, REST, Routes, type Message, type TextChannel, type DMChannel, type ThreadChannel } from 'discord.js'
 import path from 'path'
 import os from 'os'
 import dotenv from 'dotenv'
@@ -6,6 +6,8 @@ import { AccessManager } from './access.ts'
 import { PersonaLoader } from './persona.ts'
 import { chunk } from './chunk.ts'
 import { gptCommand, executeGptCommand } from './commands.ts'
+import { OpenAIClient, OpenAIRequestRejected } from './openai.ts'
+import { fetchHistory, formatHistoryForOpenAI } from './history.ts'
 
 const STATE_DIR = process.env.GPT_STATE_DIR || path.join(os.homedir(), '.gpt', 'channels', 'discord')
 dotenv.config({ path: path.join(STATE_DIR, '.env') })
@@ -18,13 +20,20 @@ if (!process.env.DISCORD_APP_ID) {
   console.error(`FATAL: DISCORD_APP_ID missing. Set in ${path.join(STATE_DIR, '.env')}`)
   process.exit(1)
 }
+if (!process.env.OPENAI_API_KEY) {
+  console.error(`FATAL: OPENAI_API_KEY missing. Set in ${path.join(STATE_DIR, '.env')}`)
+  process.exit(1)
+}
 
 const DISCORD_TOKEN: string = process.env.DISCORD_BOT_TOKEN
 const APP_ID: string = process.env.DISCORD_APP_ID
+const OPENAI_KEY: string = process.env.OPENAI_API_KEY
+const DEFAULT_MODEL: string = process.env.GPT_MODEL || 'gpt-5.5'
 const ADMIN_USER_ID: string | undefined = process.env.DISCORD_ADMIN_USER_ID
 
 const access = new AccessManager()
 const persona = new PersonaLoader()
+const openai = new OpenAIClient(OPENAI_KEY, DEFAULT_MODEL)
 
 await access.load()
 await persona.load()
@@ -57,12 +66,9 @@ client.once('ready', async () => {
   console.error(`gpt online as ${client.user?.tag} (${client.user?.id})`)
   client.user?.setPresence({
     status: 'online',
-    activities: [{ name: 'echo-only (v0.2)', type: ActivityType.Custom, state: 'echo-only (v0.2)' }]
+    activities: [{ name: 'thinking', type: ActivityType.Custom, state: 'thinking' }]
   })
 
-  // Register the slash command globally on every boot. Discord deduplicates
-  // by command name, so this is idempotent — but updates to the schema
-  // (new subcommands, changed descriptions) propagate on next restart.
   try {
     const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN)
     await rest.put(Routes.applicationCommands(APP_ID), { body: [gptCommand.toJSON()] })
@@ -79,9 +85,7 @@ client.on('interactionCreate', async interaction => {
 })
 
 client.on('messageCreate', async (message: Message) => {
-  // Bot-vs-bot loop guard: never respond to other bots (or to ourselves).
-  // This is what lets gpt-discord-bot and gem-discord-bot coexist in the
-  // same channel without triggering each other.
+  // Bot-vs-bot loop guard.
   if (message.author.bot) return
 
   const channelId = message.channel.id
@@ -90,27 +94,87 @@ client.on('messageCreate', async (message: Message) => {
 
   if (!access.canHandle({ channelId, userId, isMention })) return
 
-  // v0.2: no LLM yet. Echo the message back so we can verify the discord
-  // plumbing (gateway, intents, allowlist, mention-rule, chunking) end-to-end
-  // before wiring up OpenAI in v0.3.
   const flags = access.channelFlags(channelId)
+  const model = flags.model ?? DEFAULT_MODEL
   const systemPrompt = persona.buildSystemPrompt(channelId)
-  const modelDisplay = flags.model ?? process.env.GPT_MODEL ?? 'gpt-5.5'
+  const selfId = client.user?.id ?? ''
 
-  const echoBody = [
-    `> echo (v0.2 — no LLM wired up yet)`,
-    `**you said:** ${message.content || '_(empty)_'}`,
-    `**channel model:** \`${modelDisplay}\` · reasoning=\`${flags.reasoning}\` · showCode=\`${flags.showCode}\` · verbose=\`${flags.verbose}\``,
-    `**system prompt length:** ${systemPrompt.length} chars`,
-  ].join('\n')
-
-  const parts = chunk(echoBody)
-  for (let i = 0; i < parts.length; i++) {
-    if (i === 0) {
-      await message.reply(parts[i])
-    } else if (message.channel.isSendable()) {
-      await message.channel.send(parts[i])
+  // History fetch is best-effort — if it fails, we still try to respond using
+  // just the current message. Channel-type narrowing: text/DM/thread channels
+  // have a fetchable messages collection; nothing else we care about does.
+  let history: ReturnType<typeof formatHistoryForOpenAI> = []
+  try {
+    if (
+      message.channel.type === 0 /* GuildText */ ||
+      message.channel.type === 1 /* DM */ ||
+      message.channel.type === 11 /* PublicThread */ ||
+      message.channel.type === 12 /* PrivateThread */ ||
+      message.channel.type === 5 /* GuildAnnouncement */
+    ) {
+      const raw = await fetchHistory(message.channel as TextChannel | DMChannel | ThreadChannel, message.id)
+      history = formatHistoryForOpenAI(raw, selfId)
     }
+  } catch (e) {
+    console.error('history fetch failed:', e)
+  }
+
+  let placeholder: Message | null = null
+  try {
+    placeholder = await message.reply('💭 thinking…')
+  } catch (e) {
+    console.error('placeholder reply failed:', e)
+  }
+
+  try {
+    const result = await openai.respond({
+      systemPrompt,
+      history,
+      userMessage: message.content,
+      userName: message.author.username,
+      model,
+      reasoningEffort: flags.reasoning
+    })
+
+    // React on the user's message if the model picked one.
+    if (result.react) {
+      try { await message.react(result.react) } catch (e) { console.error('react failed:', e) }
+    }
+
+    const verbose = flags.verbose && result.usage
+      ? `\n-# \`↑ ${result.usage.inputTokens.toLocaleString('en-US')} · ↓ ${result.usage.outputTokens.toLocaleString('en-US')} · » ${(result.durationMs / 1000).toFixed(1)}s · ${result.modelUsed}\``
+      : ''
+
+    const body = (result.reply ?? '').trim() + verbose
+
+    if (!body.trim()) {
+      // Silent-exit pattern: model returned nothing and no react. Drop the
+      // placeholder rather than posting an empty bubble.
+      if (placeholder) {
+        try { await placeholder.delete() } catch {}
+      }
+      return
+    }
+
+    const parts = chunk(body)
+    for (let i = 0; i < parts.length; i++) {
+      if (i === 0 && placeholder) {
+        await placeholder.edit(parts[i])
+      } else if (i === 0) {
+        await message.reply(parts[i])
+      } else if (message.channel.isSendable()) {
+        await message.channel.send(parts[i])
+      }
+    }
+  } catch (e: any) {
+    const isRejected = e instanceof OpenAIRequestRejected
+    const errMsg = isRejected
+      ? `⚠️ ${e.reason}`
+      : `❌ error: ${e?.message ?? String(e)}`
+    console.error('respond failed:', e)
+    try {
+      if (placeholder) await placeholder.edit(errMsg)
+      else await message.reply(errMsg)
+    } catch {}
   }
 })
 
