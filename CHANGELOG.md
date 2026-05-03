@@ -6,6 +6,19 @@ Tags are annotated; check them out with `git checkout v0.N` to inspect that poin
 
 ---
 
+## v0.9 — summarization scheduler
+
+Persistent rolling per-channel summaries, injected into the system prompt for older context. Lets the bot remember channels with thousands of messages without overflowing the prompt window.
+
+- `src/summarization/store.ts` — `SummaryStore` wraps the `conversation_summaries` SQLite table (added to `MemoryStore` schema). DI surface (`getSummary` / `upsertSummary`) lets tests swap in a fake.
+- `src/summarization/summarizer.ts` — `runSummarization()` builds the prompt (previous summary + new messages since last cutoff) and runs a one-shot completion. Param shape branches on model family (gpt-5.x and o-series take `max_completion_tokens` only; legacy models keep `temperature` + `max_tokens`).
+- `src/summarization/scheduler.ts` — `SummarizationScheduler` is single-flight per channel and fire-and-forget from the caller. `scheduleIfNeeded(channelId)` runs only when the un-summarized message count crosses the threshold (default 50, configurable via `GPT_SUMMARIZATION_THRESHOLD`). `runForChannel(channelId)` forces an immediate rollup regardless of threshold (used by `/gpt compact`).
+- `gpt.ts` schedules summarization after every passive ingest. Dependency-graceful: when the native sqlite-vss / better-sqlite3 modules fail to load, the scheduler is null and ingestion / summarization both skip.
+- `PersonaLoader.buildSystemPrompt()` injects the channel's summary above the pinned-facts block when a summary exists.
+- `/gpt compact` slash command — forces a rollup now and reports the message count back to the user (or "nothing new to summarize").
+- `GPT_SUMMARIZATION_MODEL` defaults to `gpt-5.4-mini` because summarization is a low-bar synthesis task and the latency/cost wins are real.
+- 7 new tests cover the summarizer (empty input throws, summary trimmed, last-id correct), store DI, and scheduler flow (skips below threshold, runs when met, forced rollup with 0/N messages).
+
 ## v0.8 — reaction-driven actions
 
 User reactions on the bot's own messages now drive bot actions.

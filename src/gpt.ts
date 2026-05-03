@@ -16,6 +16,8 @@ import { MemoryStore, embed } from './memory.ts'
 import { PinnedFactsStore } from './pinned-facts.ts'
 import { PendingEditsStore } from './reactions/pending-edits.ts'
 import { handleReaction } from './reactions/handler.ts'
+import { SummaryStore } from './summarization/store.ts'
+import { SummarizationScheduler } from './summarization/scheduler.ts'
 import OpenAI from 'openai'
 
 const STATE_DIR = process.env.GPT_STATE_DIR || path.join(os.homedir(), '.gpt', 'channels', 'discord')
@@ -53,12 +55,38 @@ const openaiRaw = new OpenAI({ apiKey: OPENAI_KEY })
 
 // Memory store may be null if the native sqlite-vss / better-sqlite3 modules
 // fail to load on this Node version. The bot still runs; search_memory just
-// isn't registered, and passive ingestion is skipped.
+// isn't registered, and passive ingestion + summarization are skipped.
 const memoryStore = await MemoryStore.open()
 if (!memoryStore) {
   console.error('memory: RAG disabled (native module load failed); set up Node 22+ to enable')
 }
 const toolRegistry = buildDefaultRegistry(openaiRaw, memoryStore)
+
+// Summarization scheduler. Wires only when the SQLite-backed memory store is
+// available — summaries persist into the same conversation_summaries table.
+const SUMMARIZATION_THRESHOLD = parseInt(process.env.GPT_SUMMARIZATION_THRESHOLD ?? '50', 10)
+const SUMMARIZATION_BATCH_LIMIT = parseInt(process.env.GPT_SUMMARIZATION_BATCH_LIMIT ?? '500', 10)
+const SUMMARIZATION_MODEL = process.env.GPT_SUMMARIZATION_MODEL ?? 'gpt-5.4-mini'
+const summaryStore = memoryStore ? SummaryStore.fromMemory(memoryStore) : null
+if (summaryStore) persona.setSummaryStore(summaryStore)
+const summarizer: SummarizationScheduler | null = (memoryStore && summaryStore)
+  ? new SummarizationScheduler({
+      store: summaryStore,
+      fetchSinceForSummarization: async (channelId, since, limit) => {
+        const rows = memoryStore.fetchMessagesSince(channelId, since, limit)
+        return rows.map(r => ({
+          authorName: r.author_name,
+          content: r.content,
+          timestamp: r.timestamp,
+          messageId: r.id
+        }))
+      },
+      client: openaiRaw,
+      model: SUMMARIZATION_MODEL,
+      threshold: SUMMARIZATION_THRESHOLD,
+      batchLimit: SUMMARIZATION_BATCH_LIMIT
+    })
+  : null
 
 await access.load()
 await persona.load()
@@ -129,7 +157,7 @@ client.once('ready', async () => {
 client.on('interactionCreate', async interaction => {
   if (!interaction.isChatInputCommand()) return
   if (interaction.commandName !== 'gpt') return
-  await executeGptCommand(interaction, access, persona, ADMIN_USER_ID)
+  await executeGptCommand(interaction, access, persona, ADMIN_USER_ID, { summarizer })
 })
 
 // Core message-handling pipeline. Reused by:
@@ -302,6 +330,10 @@ client.on('messageCreate', async (message: Message) => {
 
   if (memoryStore && message.content.trim() && access.isAllowedAndEnabled(userId, channelId)) {
     void ingestMessage(message)
+    // Schedule summarization after ingestion so the message we just stored is
+    // counted toward the threshold. Single-flight per channel; no-op if a
+    // run is already in progress.
+    summarizer?.scheduleIfNeeded(channelId)
   }
 
   if (!access.canHandle({ channelId, userId, isMention })) return

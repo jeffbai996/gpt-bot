@@ -31,6 +31,11 @@ export const gptCommand = new SlashCommandBuilder()
     .addStringOption(o => o.setName('filename').setDescription('The persona filename (e.g. persona.md)').setRequired(true))
   )
   .addSubcommand(s => s
+    .setName('compact')
+    .setDescription('Force a context-summary rollup now, regardless of the message threshold')
+    .addChannelOption(o => o.setName('channel').setDescription('Channel (defaults to current)').setRequired(false))
+  )
+  .addSubcommand(s => s
     .setName('set')
     .setDescription('Set a per-channel flag (model, reasoning, show_code, verbose). Defaults to current channel.')
     .addStringOption(o => o
@@ -52,11 +57,18 @@ export const gptCommand = new SlashCommandBuilder()
     .addChannelOption(o => o.setName('channel').setDescription('Channel (defaults to current)').setRequired(false))
   )
 
+export interface CommandDeps {
+  // Optional — present only when the SQLite-backed summarization scheduler
+  // wired up successfully. /gpt compact reports gracefully when null.
+  summarizer: { runForChannel(channelId: string): Promise<{ messageCount: number } | null> } | null
+}
+
 export async function executeGptCommand(
   interaction: ChatInputCommandInteraction,
   access: AccessManager,
   persona: PersonaLoader,
-  adminUserId: string | undefined
+  adminUserId: string | undefined,
+  deps: CommandDeps = { summarizer: null }
 ) {
   if (adminUserId && interaction.user.id !== adminUserId) {
     return interaction.reply({ content: 'Unauthorized. You are not the designated bot admin.', ephemeral: true })
@@ -94,6 +106,26 @@ export async function executeGptCommand(
       const filename = interaction.options.getString('filename', true)
       await persona.load(filename)
       return interaction.reply({ content: `✅ Persona swapped to \`${filename}\`.`, ephemeral: true })
+    }
+
+    if (subcommand === 'compact') {
+      const channel = interaction.options.getChannel('channel') ?? interaction.channel
+      if (!channel) {
+        return interaction.reply({ content: '❌ No channel resolved.', ephemeral: true })
+      }
+      if (!deps.summarizer) {
+        return interaction.reply({ content: '⚠️ Summarization unavailable on this runtime (sqlite-vss / better-sqlite3 didn\'t load — usually means Node version too old).', ephemeral: true })
+      }
+      await interaction.deferReply({ ephemeral: true })
+      try {
+        const result = await deps.summarizer.runForChannel(channel.id)
+        if (!result) {
+          return interaction.editReply(`✅ <#${channel.id}> nothing new to summarize.`)
+        }
+        return interaction.editReply(`✅ <#${channel.id}> compacted ${result.messageCount} messages into the rolling summary.`)
+      } catch (e: any) {
+        return interaction.editReply(`❌ compact failed: ${e?.message ?? String(e)}`)
+      }
     }
 
     if (subcommand === 'set') {

@@ -58,6 +58,8 @@ export class MemoryStore {
       insertVss: any
       search: any
       fetchSince: any
+      upsertSummary: any
+      getSummary: any
     }
   ) {}
 
@@ -86,6 +88,13 @@ export class MemoryStore {
       CREATE VIRTUAL TABLE IF NOT EXISTS vss_messages USING vss0(
         embedding(${EMBEDDING_DIM})
       );
+
+      CREATE TABLE IF NOT EXISTS conversation_summaries (
+        channel_id TEXT PRIMARY KEY,
+        summary TEXT NOT NULL,
+        last_summarized_message_id TEXT NOT NULL,
+        updated_at DATETIME NOT NULL
+      );
     `)
 
     return new MemoryStore(db, {
@@ -110,6 +119,18 @@ export class MemoryStore {
           AND (? IS NULL OR CAST(id AS INTEGER) > CAST(? AS INTEGER))
         ORDER BY CAST(id AS INTEGER) ASC
         LIMIT ?
+      `),
+      upsertSummary: db.prepare(`
+        INSERT INTO conversation_summaries (channel_id, summary, last_summarized_message_id, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(channel_id) DO UPDATE SET
+          summary = excluded.summary,
+          last_summarized_message_id = excluded.last_summarized_message_id,
+          updated_at = excluded.updated_at
+      `),
+      getSummary: db.prepare(`
+        SELECT channel_id, summary, last_summarized_message_id, updated_at
+        FROM conversation_summaries WHERE channel_id = ?
       `)
     })
   }
@@ -139,9 +160,24 @@ export class MemoryStore {
     return this.statements.fetchSince.all(channelId, sinceMessageId, sinceMessageId, limit) as MessageRow[]
   }
 
+  upsertSummary(channelId: string, summary: string, lastMessageId: string): void {
+    this.statements.upsertSummary.run(channelId, summary, lastMessageId, new Date().toISOString())
+  }
+
+  getSummary(channelId: string): SummaryRow | null {
+    return (this.statements.getSummary.get(channelId) as SummaryRow | undefined) ?? null
+  }
+
   close(): void {
     try { this.db.close() } catch { /* idempotent */ }
   }
+}
+
+export interface SummaryRow {
+  channel_id: string
+  summary: string
+  last_summarized_message_id: string
+  updated_at: string
 }
 
 // Embed a string via OpenAI; returns null on failure so the caller can decide
