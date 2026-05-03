@@ -6,6 +6,19 @@ Tags are annotated; check them out with `git checkout v0.N` to inspect that poin
 
 ---
 
+## v0.7 — semantic memory + RAG
+
+Adds long-term recall over channel history. Every allowed user message gets embedded and stored; the model can call `search_memory(query)` during the tool loop to fetch semantically-relevant past context.
+
+- `src/memory.ts` — `MemoryStore` class wraps `better-sqlite3` + `sqlite-vss`. Schema: `messages` table (id, channel_id, author_id, author_name, content, timestamp) + `vss_messages` virtual table for 1536-dim embeddings (`text-embedding-3-small`). Both native modules dynamic-imported with graceful fallback when the runtime ABI doesn't match.
+- `MemoryStore.open()` returns null when natives fail to load; bot logs a warning and continues without RAG.
+- `embed()` helper handles empty input, API failures, and missing data without throwing — callers null-check.
+- `src/tools/search-memory.ts` — `search_memory(query, limit)` registered into the default registry only when memory is available. Uses VSS cosine search scoped to the current channel.
+- `gpt.ts` — passive ingestion: every allowed user message in an enabled channel gets embedded + stored in the background. Independent of the reply gate, so the bot learns from non-mention conversation. Errors logged, never thrown.
+- 4 tests for the embedding helper (empty, success, throws, no-data). Native-module integration verified live.
+
+Verified live: text-embedding-3-small returns the expected 1536-dim vector via our `embed()` wrapper.
+
 ## v0.6 — ToolRegistry + web_search + fetch_url
 
 Pluggable function-calling tools. The model can now decide it needs to read a URL or search the web, and the tool loop dispatches the call, feeds results back, and lets the model compose its final reply from the gathered context.

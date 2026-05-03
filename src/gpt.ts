@@ -12,6 +12,7 @@ import { fetchHistory, formatHistoryForOpenAI } from './history.ts'
 import { processAttachments } from './attachments.ts'
 import { applyLifecycle } from './reactions/lifecycle.ts'
 import { buildDefaultRegistry } from './tools/index.ts'
+import { MemoryStore, embed } from './memory.ts'
 import OpenAI from 'openai'
 
 const STATE_DIR = process.env.GPT_STATE_DIR || path.join(os.homedir(), '.gpt', 'channels', 'discord')
@@ -39,10 +40,19 @@ const ADMIN_USER_ID: string | undefined = process.env.DISCORD_ADMIN_USER_ID
 const access = new AccessManager()
 const persona = new PersonaLoader()
 const openai = new OpenAIClient(OPENAI_KEY, DEFAULT_MODEL)
-// Raw SDK client for non-chat endpoints (audio.transcriptions, web-search
-// side-call). Sharing the same key/instance avoids spinning up two HTTP pools.
+// Raw SDK client for non-chat endpoints (audio.transcriptions, embeddings,
+// web-search side-call). Sharing the same key/instance avoids spinning up two
+// HTTP pools.
 const openaiRaw = new OpenAI({ apiKey: OPENAI_KEY })
-const toolRegistry = buildDefaultRegistry(openaiRaw)
+
+// Memory store may be null if the native sqlite-vss / better-sqlite3 modules
+// fail to load on this Node version. The bot still runs; search_memory just
+// isn't registered, and passive ingestion is skipped.
+const memoryStore = await MemoryStore.open()
+if (!memoryStore) {
+  console.error('memory: RAG disabled (native module load failed); set up Node 22+ to enable')
+}
+const toolRegistry = buildDefaultRegistry(openaiRaw, memoryStore)
 
 await access.load()
 await persona.load()
@@ -60,6 +70,26 @@ process.on('SIGHUP', async () => {
 
 process.on('unhandledRejection', err => console.error('unhandledRejection:', err))
 process.on('uncaughtException', err => console.error('uncaughtException:', err))
+
+// Embed + persist a single message in the background. Errors are logged but
+// never thrown — ingestion failures shouldn't impact the reply flow.
+async function ingestMessage(message: Message): Promise<void> {
+  if (!memoryStore) return
+  try {
+    const emb = await embed(openaiRaw, message.content)
+    if (!emb) return
+    memoryStore.insertMessage({
+      id: message.id,
+      channel_id: message.channel.id,
+      author_id: message.author.id,
+      author_name: message.author.username,
+      content: message.content,
+      timestamp: new Date(message.createdTimestamp).toISOString()
+    }, emb)
+  } catch (e) {
+    console.error('ingestMessage failed:', e instanceof Error ? e.message : e)
+  }
+}
 
 const client = new Client({
   intents: [
@@ -103,6 +133,15 @@ client.on('messageCreate', async (message: Message) => {
   const channelId = message.channel.id
   const userId = message.author.id
   const isMention = client.user ? message.mentions.users.has(client.user.id) : false
+
+  // Passive memory ingestion runs independently of the reply gate. Any
+  // message from an allowed user in an enabled channel gets embedded so
+  // search_memory can recall it later, even if requireMention=true and the
+  // bot didn't reply at the time. Fire-and-forget; ingestion never blocks
+  // the reply path.
+  if (memoryStore && message.content.trim() && access.isAllowedAndEnabled(userId, channelId)) {
+    void ingestMessage(message)
+  }
 
   if (!access.canHandle({ channelId, userId, isMention })) return
 
