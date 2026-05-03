@@ -5,6 +5,13 @@ export interface ParsedResponse {
   reply: string          // text to post (may be empty if react-only)
 }
 
+export type LifecycleEvent =
+  | { type: 'thinking_start' }
+  | { type: 'reasoning_start' }   // first reasoning_summary token (o-series)
+  | { type: 'first_token' }       // first content token observed
+  | { type: 'partial', reply: string }  // incremental reply (best-effort)
+  | { type: 'done' }
+
 export interface RespondInput {
   systemPrompt: string
   history: OpenAI.Chat.Completions.ChatCompletionMessageParam[]
@@ -12,6 +19,7 @@ export interface RespondInput {
   userName: string
   model: string
   reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high'
+  onEvent?: (event: LifecycleEvent) => void
 }
 
 export interface RespondResult extends ParsedResponse {
@@ -61,7 +69,7 @@ export class OpenAIClient {
   }
 
   async respond(input: RespondInput): Promise<RespondResult> {
-    const { systemPrompt, history, userMessage, userName, model, reasoningEffort } = input
+    const { systemPrompt, history, userMessage, userName, model, reasoningEffort, onEvent } = input
     const start = Date.now()
 
     const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
@@ -81,37 +89,71 @@ export class OpenAIClient {
         : reasoningEffort === 'low' ? 'low'
         : 'medium'
 
+    onEvent?.({ type: 'thinking_start' })
+
     try {
-      const resp = await this.client.chat.completions.create({
+      const stream = await this.client.chat.completions.create({
         model,
         messages,
         response_format: { type: 'json_object' },
+        stream: true,
+        stream_options: { include_usage: true },
         ...(reasoning
           ? { reasoning_effort: sdkEffort }
           : { temperature: 0.7, max_tokens: 4096 })
       })
 
-      const choice = resp.choices?.[0]
-      const raw = choice?.message?.content ?? ''
-      const parsed = parseStructuredReply(raw)
+      let accumulated = ''
+      let finishReason: string | null = null
+      let usage: RespondResult['usage'] = null
+      let modelUsed = model
+      let firstTokenSeen = false
+      let lastPartialEmit = ''
+
+      for await (const chunk of stream) {
+        if (chunk.model) modelUsed = chunk.model
+        const choice = chunk.choices?.[0]
+        if (choice) {
+          const delta = (choice.delta as { content?: string | null })?.content
+          if (delta) {
+            accumulated += delta
+            if (!firstTokenSeen) {
+              firstTokenSeen = true
+              onEvent?.({ type: 'first_token' })
+            }
+            // Best-effort incremental reply extraction. Emit `partial` events
+            // when the in-progress `"reply": "..."` substring grows by
+            // enough to be worth a Discord edit. The caller throttles edits.
+            const partial = extractPartialReply(accumulated)
+            if (partial && partial !== lastPartialEmit) {
+              lastPartialEmit = partial
+              onEvent?.({ type: 'partial', reply: partial })
+            }
+          }
+          if (choice.finish_reason) finishReason = choice.finish_reason
+        }
+        if (chunk.usage) {
+          usage = {
+            inputTokens: chunk.usage.prompt_tokens ?? 0,
+            outputTokens: chunk.usage.completion_tokens ?? 0,
+            totalTokens: chunk.usage.total_tokens ?? 0
+          }
+        }
+      }
+
+      onEvent?.({ type: 'done' })
+
+      const parsed = parseStructuredReply(accumulated)
 
       return {
         react: parsed.react,
         reply: parsed.reply,
-        usage: resp.usage
-          ? {
-              inputTokens: resp.usage.prompt_tokens ?? 0,
-              outputTokens: resp.usage.completion_tokens ?? 0,
-              totalTokens: resp.usage.total_tokens ?? 0
-            }
-          : null,
-        finishReason: choice?.finish_reason ?? null,
+        usage,
+        finishReason,
         durationMs: Date.now() - start,
-        modelUsed: resp.model ?? model
+        modelUsed
       }
     } catch (e: any) {
-      // Convert known refusal/quota patterns into a typed rejection so the
-      // caller can react ⚠️ vs ❌ appropriately. Everything else bubbles.
       const status = e?.status ?? e?.response?.status
       const code = e?.code ?? e?.error?.code
       if (status === 429 || code === 'rate_limit_exceeded' || code === 'insufficient_quota') {
@@ -123,6 +165,64 @@ export class OpenAIClient {
       throw e
     }
   }
+}
+
+// During streaming, find the value of the `"reply"` key in a partial JSON
+// object. Doesn't fully parse JSON (the doc is incomplete mid-stream); just
+// scans for `"reply"` and walks forward, unescaping common sequences. Returns
+// null if the key hasn't appeared yet, or the in-flight string value.
+//
+// Limitations: doesn't validate matching braces, doesn't handle every JSON
+// escape sequence, doesn't notice if `"reply"` appears as part of another
+// string. Good enough for Discord progress-edit display.
+export function extractPartialReply(raw: string): string | null {
+  const keyIdx = raw.indexOf('"reply"')
+  if (keyIdx === -1) return null
+
+  // Skip past `"reply"`, optional whitespace, the colon, more whitespace.
+  let i = keyIdx + '"reply"'.length
+  while (i < raw.length && /\s/.test(raw[i])) i++
+  if (raw[i] !== ':') return null
+  i++
+  while (i < raw.length && /\s/.test(raw[i])) i++
+
+  // Handle a null or non-string value gracefully.
+  if (raw[i] !== '"') return null
+  i++
+
+  let out = ''
+  while (i < raw.length) {
+    const c = raw[i]
+    if (c === '\\') {
+      const next = raw[i + 1]
+      if (next === undefined) break
+      if (next === 'n') out += '\n'
+      else if (next === 't') out += '\t'
+      else if (next === 'r') out += '\r'
+      else if (next === '"') out += '"'
+      else if (next === '\\') out += '\\'
+      else if (next === '/') out += '/'
+      else if (next === 'u') {
+        const hex = raw.slice(i + 2, i + 6)
+        if (hex.length === 4 && /^[0-9a-fA-F]{4}$/.test(hex)) {
+          out += String.fromCharCode(parseInt(hex, 16))
+          i += 6
+          continue
+        }
+        // incomplete \u escape — bail without appending
+        break
+      } else {
+        out += next
+      }
+      i += 2
+      continue
+    }
+    if (c === '"') break  // string terminated cleanly
+    out += c
+    i++
+  }
+
+  return out
 }
 
 // Best-effort parser for the structured `{react, reply}` shape. Handles the

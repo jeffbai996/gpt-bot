@@ -7,7 +7,9 @@ import { PersonaLoader } from './persona.ts'
 import { chunk } from './chunk.ts'
 import { gptCommand, executeGptCommand } from './commands.ts'
 import { OpenAIClient, OpenAIRequestRejected } from './openai.ts'
+import type { LifecycleEvent } from './openai.ts'
 import { fetchHistory, formatHistoryForOpenAI } from './history.ts'
+import { applyLifecycle } from './reactions/lifecycle.ts'
 
 const STATE_DIR = process.env.GPT_STATE_DIR || path.join(os.homedir(), '.gpt', 'channels', 'discord')
 dotenv.config({ path: path.join(STATE_DIR, '.env') })
@@ -118,11 +120,42 @@ client.on('messageCreate', async (message: Message) => {
     console.error('history fetch failed:', e)
   }
 
+  // 👀 received — fires before any work, so the user knows the bot saw their
+  // message even if the model call takes a while.
+  await applyLifecycle(message, 'received')
+
   let placeholder: Message | null = null
   try {
     placeholder = await message.reply('💭 thinking…')
   } catch (e) {
     console.error('placeholder reply failed:', e)
+  }
+
+  // Throttle Discord edits during streaming. Discord rate-limits message edits
+  // and frequent edits also feel jittery — every ~700ms is the sweet spot.
+  let lastEditAt = 0
+  let lastEditedText = ''
+  const EDIT_INTERVAL_MS = 700
+
+  const onEvent = (event: LifecycleEvent) => {
+    if (event.type === 'thinking_start') {
+      void applyLifecycle(message, 'thinking')
+      return
+    }
+    if (event.type === 'partial' && placeholder) {
+      const now = Date.now()
+      if (now - lastEditAt < EDIT_INTERVAL_MS) return
+      const display = event.reply.trim()
+      if (!display || display === lastEditedText) return
+      // Truncate to a single chunk for streaming display — we'll do the
+      // proper multi-chunk split at the end. Reserve a few chars for the
+      // ellipsis suffix so we don't blow past the limit on the next tick.
+      const max = 1900
+      const truncated = display.length > max ? display.slice(0, max) + '…' : display
+      lastEditAt = now
+      lastEditedText = display
+      placeholder.edit(truncated).catch(() => { /* fire-and-forget */ })
+    }
   }
 
   try {
@@ -132,10 +165,10 @@ client.on('messageCreate', async (message: Message) => {
       userMessage: message.content,
       userName: message.author.username,
       model,
-      reasoningEffort: flags.reasoning
+      reasoningEffort: flags.reasoning,
+      onEvent
     })
 
-    // React on the user's message if the model picked one.
     if (result.react) {
       try { await message.react(result.react) } catch (e) { console.error('react failed:', e) }
     }
@@ -147,8 +180,8 @@ client.on('messageCreate', async (message: Message) => {
     const body = (result.reply ?? '').trim() + verbose
 
     if (!body.trim()) {
-      // Silent-exit pattern: model returned nothing and no react. Drop the
-      // placeholder rather than posting an empty bubble.
+      // Silent-exit. No emoji tombstone — clear transients, drop placeholder.
+      await applyLifecycle(message, 'silenced')
       if (placeholder) {
         try { await placeholder.delete() } catch {}
       }
@@ -165,8 +198,23 @@ client.on('messageCreate', async (message: Message) => {
         await message.channel.send(parts[i])
       }
     }
+
+    // Terminal lifecycle. `length` (truncated) wins over `replied` because
+    // the user should see the cut-off marker.
+    if (result.finishReason === 'length') {
+      await applyLifecycle(message, 'truncated')
+    } else {
+      await applyLifecycle(message, 'replied')
+    }
   } catch (e: any) {
     const isRejected = e instanceof OpenAIRequestRejected
+    if (isRejected && e.reason === 'content_policy') {
+      await applyLifecycle(message, 'blocked')
+    } else if (isRejected) {
+      await applyLifecycle(message, 'denied')
+    } else {
+      await applyLifecycle(message, 'errored')
+    }
     const errMsg = isRejected
       ? `⚠️ ${e.reason}`
       : `❌ error: ${e?.message ?? String(e)}`

@@ -6,6 +6,15 @@ Tags are annotated; check them out with `git checkout v0.N` to inspect that poin
 
 ---
 
+## v0.4 — streaming + lifecycle reactions
+
+Replies stream into Discord as the model generates, and lifecycle reactions surface what's happening inside a turn.
+
+- **Streaming** — `OpenAIClient.respond()` switches to `stream: true` with `stream_options: { include_usage: true }` so we still get usage tokens at end-of-stream. The placeholder `💭 thinking…` reply is edited in place every ~700ms with the in-flight reply text. On stream end, the placeholder becomes the final response (zero-duplicate guarantee on chunk-count changes).
+- **Mid-stream JSON parsing** — `extractPartialReply()` walks the in-progress JSON string for the `"reply"` value, unescaping common sequences (`\n`, `\"`, `\uXXXX`). Tolerant of incomplete escapes. Final parse uses the same `parseStructuredReply()` from v0.3 once the full chunk arrives.
+- **Lifecycle reactions** — `src/reactions/lifecycle.ts` ports the squad pattern. `👀 received` fires before any work; `🤔 thinking` fires when the model call starts; `✅ replied` / `✂️ truncated` (`finish_reason === 'length'`) / `🛑 blocked` (content-policy) / `⚠️ denied` (rate-limit/quota) / `❌ errored` are terminal. Predecessors get cleared on transition so the row of reactions stays compact. Reasoning + searching + tooling emojis are reserved for v0.5/v0.6.
+- **Silent-exit** matches v0.3 behavior — clears all transients, deletes placeholder, leaves no tombstone.
+
 ## v0.3 — openai SDK + minimum viable bot
 
 First version that actually talks to OpenAI. Non-streaming, no tools, no multimodal — just system prompt + history + user message → reply.

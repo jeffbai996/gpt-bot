@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { parseStructuredReply } from '../src/openai.ts'
+import { parseStructuredReply, extractPartialReply } from '../src/openai.ts'
 
 test('parseStructuredReply: well-formed JSON', () => {
   const out = parseStructuredReply('{"react": "👍", "reply": "hello"}')
@@ -45,4 +45,27 @@ test('parseStructuredReply: empty string → empty reply', () => {
   const out = parseStructuredReply('')
   assert.equal(out.react, null)
   assert.equal(out.reply, '')
+})
+
+test('extractPartialReply: returns null when reply key not yet present', () => {
+  assert.equal(extractPartialReply('{"react": "👍"'), null)
+  assert.equal(extractPartialReply(''), null)
+})
+
+test('extractPartialReply: extracts in-flight reply substring', () => {
+  // Mid-stream: reply value is open and still growing.
+  assert.equal(extractPartialReply('{"react": null, "reply": "hello wo'), 'hello wo')
+})
+
+test('extractPartialReply: handles closed reply string', () => {
+  assert.equal(extractPartialReply('{"react": null, "reply": "hello"'), 'hello')
+})
+
+test('extractPartialReply: unescapes common sequences', () => {
+  assert.equal(extractPartialReply('{"reply": "line1\\nline2'), 'line1\nline2')
+  assert.equal(extractPartialReply('{"reply": "she said \\"hi\\"'), 'she said "hi"')
+})
+
+test('extractPartialReply: tolerates whitespace variations around colon', () => {
+  assert.equal(extractPartialReply('{ "reply"   :   "x'), 'x')
 })
