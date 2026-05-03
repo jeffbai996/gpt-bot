@@ -1,0 +1,167 @@
+import fs from 'fs/promises'
+import path from 'path'
+import os from 'os'
+
+export type ReasoningEffort = 'minimal' | 'low' | 'medium' | 'high'
+
+export interface ChannelConfig {
+  enabled: boolean
+  requireMention: boolean
+  model?: string             // override default model per-channel (gpt-5.5 | gpt-5.4-mini | o3)
+  reasoning?: ReasoningEffort  // for o-series; ignored by gpt-5.x
+  showCode?: boolean         // default true — render tool calls + structured outputs
+  verbose?: boolean          // default true — surface usage/finish_reason footer
+}
+
+export interface ChannelFlags {
+  model: string | null
+  reasoning: ReasoningEffort
+  showCode: boolean
+  verbose: boolean
+}
+
+export interface AccessFile {
+  users: Record<string, { allowed: boolean }>
+  channels: Record<string, ChannelConfig>
+}
+
+export interface CanHandleInput {
+  channelId: string
+  userId: string
+  isMention: boolean
+}
+
+const EMPTY: AccessFile = { users: {}, channels: {} }
+const VALID_REASONING: ReasoningEffort[] = ['minimal', 'low', 'medium', 'high']
+
+const DEFAULT_FLAGS = {
+  reasoning: 'medium' as ReasoningEffort,
+  showCode: true,
+  verbose: true,
+}
+
+export class AccessManager {
+  private stateDir: string
+  private file: string
+  private data: AccessFile = { ...EMPTY }
+
+  constructor() {
+    this.stateDir = process.env.GPT_STATE_DIR || path.join(os.homedir(), '.gpt', 'channels', 'discord')
+    this.file = path.join(this.stateDir, 'access.json')
+  }
+
+  async load(): Promise<void> {
+    await fs.mkdir(this.stateDir, { recursive: true })
+    try {
+      const raw = await fs.readFile(this.file, 'utf8')
+      const parsed = JSON.parse(raw) as Partial<AccessFile>
+      this.data = {
+        users: parsed.users ?? {},
+        channels: parsed.channels ?? {}
+      }
+    } catch (e: any) {
+      if (e.code === 'ENOENT') {
+        this.data = { ...EMPTY }
+        await fs.writeFile(this.file, JSON.stringify(this.data, null, 2), 'utf8')
+      } else {
+        throw e
+      }
+    }
+  }
+
+  async save(): Promise<void> {
+    await fs.writeFile(this.file, JSON.stringify(this.data, null, 2), 'utf8')
+  }
+
+  canHandle({ channelId, userId, isMention }: CanHandleInput): boolean {
+    const user = this.data.users[userId]
+    if (!user?.allowed) return false
+
+    const channel = this.data.channels[channelId]
+    if (!channel?.enabled) return false
+
+    if (channel.requireMention && !isMention) return false
+
+    return true
+  }
+
+  canReact(userId: string, channelId: string): boolean {
+    const user = this.data.users[userId]
+    if (!user?.allowed) return false
+    const channel = this.data.channels[channelId]
+    if (!channel?.enabled) return false
+    return true
+  }
+
+  isAllowedAndEnabled(userId: string, channelId: string): boolean {
+    return this.canReact(userId, channelId)
+  }
+
+  async allowUser(userId: string): Promise<void> {
+    this.data.users[userId] = { allowed: true }
+    await this.save()
+  }
+
+  async revokeUser(userId: string): Promise<void> {
+    this.data.users[userId] = { allowed: false }
+    await this.save()
+  }
+
+  async setChannel(
+    channelId: string,
+    enabled: boolean,
+    requireMention: boolean,
+    flags?: Partial<ChannelFlags>
+  ): Promise<void> {
+    if (flags?.reasoning !== undefined && !VALID_REASONING.includes(flags.reasoning)) {
+      throw new Error(`invalid reasoning effort "${flags.reasoning}" — must be one of: ${VALID_REASONING.join(', ')}`)
+    }
+    const existing = this.data.channels[channelId]
+    this.data.channels[channelId] = {
+      enabled,
+      requireMention,
+      ...(flags?.model != null ? { model: flags.model } : existing?.model ? { model: existing.model } : {}),
+      reasoning: flags?.reasoning ?? existing?.reasoning ?? DEFAULT_FLAGS.reasoning,
+      showCode: flags?.showCode ?? existing?.showCode ?? DEFAULT_FLAGS.showCode,
+      verbose: flags?.verbose ?? existing?.verbose ?? DEFAULT_FLAGS.verbose,
+    }
+    await this.save()
+  }
+
+  async setChannelFlags(
+    channelId: string,
+    patch: Partial<ChannelFlags>
+  ): Promise<ChannelConfig> {
+    const existing = this.data.channels[channelId]
+    if (!existing) {
+      throw new Error(`channel ${channelId} not configured — run /gpt channel first`)
+    }
+    if (patch.reasoning !== undefined && !VALID_REASONING.includes(patch.reasoning)) {
+      throw new Error(`invalid reasoning effort "${patch.reasoning}" — must be one of: ${VALID_REASONING.join(', ')}`)
+    }
+    this.data.channels[channelId] = {
+      ...existing,
+      // null sentinel = clear the per-channel override (back to global default).
+      ...(patch.model === null ? { model: undefined } : patch.model !== undefined ? { model: patch.model } : {}),
+      ...(patch.reasoning !== undefined ? { reasoning: patch.reasoning } : {}),
+      ...(patch.showCode !== undefined ? { showCode: patch.showCode } : {}),
+      ...(patch.verbose !== undefined ? { verbose: patch.verbose } : {}),
+    }
+    await this.save()
+    return this.data.channels[channelId]
+  }
+
+  channelFlags(channelId: string): ChannelFlags {
+    const channel = this.data.channels[channelId]
+    return {
+      model: channel?.model ?? null,
+      reasoning: channel?.reasoning ?? DEFAULT_FLAGS.reasoning,
+      showCode: channel?.showCode ?? DEFAULT_FLAGS.showCode,
+      verbose: channel?.verbose ?? DEFAULT_FLAGS.verbose,
+    }
+  }
+
+  channelConfig(channelId: string): ChannelConfig | undefined {
+    return this.data.channels[channelId]
+  }
+}
