@@ -1,0 +1,16 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+.DS_Store
+inbox/
+*.log
+persona.md
+access.json
+README_PRIVATE.md
+
+# Internal architecture plans/specs — kept locally for agent context, never
+# committed. Public repo; these inevitably leak internal infra details.
+docs/superpowers/
+docs/handoff-prompts/
