@@ -6,6 +6,28 @@ Tags are annotated; check them out with `git checkout v0.N` to inspect that poin
 
 ---
 
+## v0.8 — reaction-driven actions
+
+User reactions on the bot's own messages now drive bot actions.
+
+- **🔁 regenerate** — re-runs the same prompt and edits the existing reply in place rather than spawning a new message
+- **🔍 expand** — re-runs with a "go deeper / add detail" preamble; posts a fresh follow-up
+- **📌 pin** — appends the reply to a per-channel pinned-facts file at `~/.gpt/channels/discord/pinned-facts.md`. Pinned content is injected into the system prompt for that channel on every subsequent turn.
+- **❌ delete** — bot deletes its own message
+- **🔇 mute** / **🔊 unmute** — toggle `requireMention` on the channel without losing other flag state
+- **✏️ markForEdit** — marks the bot message as edit-target; the user's next message in that channel edits it in place rather than producing a new reply
+
+New modules:
+- `src/reactions/vocabulary.ts` — emoji → action map + outbound react-emoji validator (ZWJ-aware Unicode-only matcher to skip the model's `:custom_name:` Discord-emoji hallucinations).
+- `src/reactions/pending-edits.ts` — in-memory map with TTL for the ✏️ flow.
+- `src/reactions/handler.ts` — dispatches incoming `messageReactionAdd` events to action handlers, gated on `access.canReact`.
+- `src/reactions/actions.ts` — the actions themselves. `regenerate`/`expand` call back into the bot's main message-handling pipeline via a `rerunHandler` callback.
+- `src/pinned-facts.ts` — sectioned per-channel append-only markdown file. Sync read for system-prompt assembly; async append on pin.
+- `gpt.ts` is restructured: extracts `handleUserMessage(message, targetMessage, expansion)` from the messageCreate body so reactions and pending-edit consumers can re-invoke the same pipeline.
+- `PersonaLoader` gains `setPinnedFactsStore(store)`; `buildSystemPrompt(channelId)` now appends the channel's pinned facts to the system prompt.
+
+12 new tests cover vocabulary mapping, ZWJ sequence validation, pending-edits TTL, and the pinned-facts read/append round-trip with truncation.
+
 ## v0.7 — semantic memory + RAG
 
 Adds long-term recall over channel history. Every allowed user message gets embedded and stored; the model can call `search_memory(query)` during the tool loop to fetch semantically-relevant past context.

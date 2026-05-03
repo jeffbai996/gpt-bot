@@ -13,6 +13,9 @@ import { processAttachments } from './attachments.ts'
 import { applyLifecycle } from './reactions/lifecycle.ts'
 import { buildDefaultRegistry } from './tools/index.ts'
 import { MemoryStore, embed } from './memory.ts'
+import { PinnedFactsStore } from './pinned-facts.ts'
+import { PendingEditsStore } from './reactions/pending-edits.ts'
+import { handleReaction } from './reactions/handler.ts'
 import OpenAI from 'openai'
 
 const STATE_DIR = process.env.GPT_STATE_DIR || path.join(os.homedir(), '.gpt', 'channels', 'discord')
@@ -39,6 +42,9 @@ const ADMIN_USER_ID: string | undefined = process.env.DISCORD_ADMIN_USER_ID
 
 const access = new AccessManager()
 const persona = new PersonaLoader()
+const pendingEdits = new PendingEditsStore()
+const pinnedFacts = new PinnedFactsStore(path.join(STATE_DIR, 'pinned-facts.md'))
+persona.setPinnedFactsStore(pinnedFacts)
 const openai = new OpenAIClient(OPENAI_KEY, DEFAULT_MODEL)
 // Raw SDK client for non-chat endpoints (audio.transcriptions, embeddings,
 // web-search side-call). Sharing the same key/instance avoids spinning up two
@@ -126,33 +132,28 @@ client.on('interactionCreate', async interaction => {
   await executeGptCommand(interaction, access, persona, ADMIN_USER_ID)
 })
 
-client.on('messageCreate', async (message: Message) => {
-  // Bot-vs-bot loop guard.
-  if (message.author.bot) return
-
+// Core message-handling pipeline. Reused by:
+//   - messageCreate (normal user message → fresh reply)
+//   - regenerate reaction (re-runs against the same user message, edits the
+//     bot's existing reply rather than posting again)
+//   - expand reaction (re-runs with a "go deeper" preamble; new reply)
+//   - markForEdit pending-edit consumer (next user message edits the marked
+//     bot message in place)
+//
+// targetMessage non-null → edit that bot message instead of posting fresh.
+// expansion=true → prepend an "expand on your prior reply" instruction.
+async function handleUserMessage(
+  message: Message,
+  targetMessage: Message | null,
+  expansion: boolean
+): Promise<void> {
   const channelId = message.channel.id
   const userId = message.author.id
-  const isMention = client.user ? message.mentions.users.has(client.user.id) : false
-
-  // Passive memory ingestion runs independently of the reply gate. Any
-  // message from an allowed user in an enabled channel gets embedded so
-  // search_memory can recall it later, even if requireMention=true and the
-  // bot didn't reply at the time. Fire-and-forget; ingestion never blocks
-  // the reply path.
-  if (memoryStore && message.content.trim() && access.isAllowedAndEnabled(userId, channelId)) {
-    void ingestMessage(message)
-  }
-
-  if (!access.canHandle({ channelId, userId, isMention })) return
-
   const flags = access.channelFlags(channelId)
   const model = flags.model ?? DEFAULT_MODEL
   const systemPrompt = persona.buildSystemPrompt(channelId)
   const selfId = client.user?.id ?? ''
 
-  // History fetch is best-effort — if it fails, we still try to respond using
-  // just the current message. Channel-type narrowing: text/DM/thread channels
-  // have a fetchable messages collection; nothing else we care about does.
   let history: ReturnType<typeof formatHistoryForOpenAI> = []
   try {
     if (
@@ -169,12 +170,8 @@ client.on('messageCreate', async (message: Message) => {
     console.error('history fetch failed:', e)
   }
 
-  // 👀 received — fires before any work, so the user knows the bot saw their
-  // message even if the model call takes a while.
   await applyLifecycle(message, 'received')
 
-  // 📎 ingesting — fires only when there's actual work (attachments) to do
-  // before the model call. Skip for plain text messages so the row stays clean.
   const attachments = [...message.attachments.values()]
   let imageParts: NonNullable<Parameters<typeof openai.respond>[0]['imageParts']> = []
   let extraText = ''
@@ -189,45 +186,42 @@ client.on('messageCreate', async (message: Message) => {
     }
   }
 
-  let placeholder: Message | null = null
-  try {
-    placeholder = await message.reply('💭 thinking…')
-  } catch (e) {
-    console.error('placeholder reply failed:', e)
+  // The expansion preamble is just a small steer appended to extraText so
+  // the model knows to add detail rather than re-roll the same answer. Lives
+  // here rather than in the persona so it only fires for the 🔍 path.
+  if (expansion) {
+    extraText = (extraText ? extraText + '\n\n' : '') +
+      '[Expansion request: the user wants you to go deeper on your most recent reply in this channel — add detail, examples, or counter-points. Don\'t repeat what you already said; build on it.]'
   }
 
-  // Throttle Discord edits during streaming. Discord rate-limits message edits
-  // and frequent edits also feel jittery — every ~700ms is the sweet spot.
+  let workMessage: Message | null = targetMessage
+  if (!workMessage) {
+    try {
+      workMessage = await message.reply('💭 thinking…')
+    } catch (e) {
+      console.error('placeholder reply failed:', e)
+    }
+  }
+
+  // Throttle Discord edits during streaming.
   let lastEditAt = 0
   let lastEditedText = ''
   const EDIT_INTERVAL_MS = 700
 
   const onEvent = (event: LifecycleEvent) => {
-    if (event.type === 'thinking_start') {
-      void applyLifecycle(message, 'thinking')
-      return
-    }
-    if (event.type === 'searching') {
-      void applyLifecycle(message, 'searching')
-      return
-    }
-    if (event.type === 'tool_start') {
-      void applyLifecycle(message, 'tooling')
-      return
-    }
-    if (event.type === 'partial' && placeholder) {
+    if (event.type === 'thinking_start') { void applyLifecycle(message, 'thinking'); return }
+    if (event.type === 'searching') { void applyLifecycle(message, 'searching'); return }
+    if (event.type === 'tool_start') { void applyLifecycle(message, 'tooling'); return }
+    if (event.type === 'partial' && workMessage) {
       const now = Date.now()
       if (now - lastEditAt < EDIT_INTERVAL_MS) return
       const display = event.reply.trim()
       if (!display || display === lastEditedText) return
-      // Truncate to a single chunk for streaming display — we'll do the
-      // proper multi-chunk split at the end. Reserve a few chars for the
-      // ellipsis suffix so we don't blow past the limit on the next tick.
       const max = 1900
       const truncated = display.length > max ? display.slice(0, max) + '…' : display
       lastEditAt = now
       lastEditedText = display
-      placeholder.edit(truncated).catch(() => { /* fire-and-forget */ })
+      workMessage.edit(truncated).catch(() => { /* fire-and-forget */ })
     }
   }
 
@@ -258,18 +252,17 @@ client.on('messageCreate', async (message: Message) => {
     const body = (result.reply ?? '').trim() + verbose
 
     if (!body.trim()) {
-      // Silent-exit. No emoji tombstone — clear transients, drop placeholder.
       await applyLifecycle(message, 'silenced')
-      if (placeholder) {
-        try { await placeholder.delete() } catch {}
+      if (workMessage && !targetMessage) {
+        try { await workMessage.delete() } catch {}
       }
       return
     }
 
     const parts = chunk(body)
     for (let i = 0; i < parts.length; i++) {
-      if (i === 0 && placeholder) {
-        await placeholder.edit(parts[i])
+      if (i === 0 && workMessage) {
+        await workMessage.edit(parts[i])
       } else if (i === 0) {
         await message.reply(parts[i])
       } else if (message.channel.isSendable()) {
@@ -277,8 +270,6 @@ client.on('messageCreate', async (message: Message) => {
       }
     }
 
-    // Terminal lifecycle. `length` (truncated) wins over `replied` because
-    // the user should see the cut-off marker.
     if (result.finishReason === 'length') {
       await applyLifecycle(message, 'truncated')
     } else {
@@ -293,15 +284,61 @@ client.on('messageCreate', async (message: Message) => {
     } else {
       await applyLifecycle(message, 'errored')
     }
-    const errMsg = isRejected
-      ? `⚠️ ${e.reason}`
-      : `❌ error: ${e?.message ?? String(e)}`
+    const errMsg = isRejected ? `⚠️ ${e.reason}` : `❌ error: ${e?.message ?? String(e)}`
     console.error('respond failed:', e)
     try {
-      if (placeholder) await placeholder.edit(errMsg)
+      if (workMessage) await workMessage.edit(errMsg)
       else await message.reply(errMsg)
     } catch {}
   }
+}
+
+client.on('messageCreate', async (message: Message) => {
+  if (message.author.bot) return
+
+  const channelId = message.channel.id
+  const userId = message.author.id
+  const isMention = client.user ? message.mentions.users.has(client.user.id) : false
+
+  if (memoryStore && message.content.trim() && access.isAllowedAndEnabled(userId, channelId)) {
+    void ingestMessage(message)
+  }
+
+  if (!access.canHandle({ channelId, userId, isMention })) return
+
+  // Pending-edit consumer: if a prior bot message in this channel was marked
+  // for edit (✏️), this user message edits it in place rather than spawning
+  // a fresh reply. Resolves the marker either way.
+  let target: Message | null = null
+  const pendingEditId = pendingEdits.get(channelId)
+  if (pendingEditId) {
+    pendingEdits.clear(channelId)
+    try {
+      target = await message.channel.messages.fetch(pendingEditId)
+    } catch (e) {
+      console.error('pending-edit fetch failed:', e)
+      target = null
+    }
+  }
+
+  await handleUserMessage(message, target, false)
+})
+
+client.on('messageReactionAdd', async (reaction, user) => {
+  await handleReaction(reaction, user, {
+    client,
+    access,
+    buildContext: (msg, reactor) => ({
+      message: msg,
+      reactor,
+      client,
+      access,
+      persona,
+      pendingEdits,
+      pinnedFacts,
+      rerunHandler: handleUserMessage
+    })
+  })
 })
 
 client.login(DISCORD_TOKEN)

@@ -1,6 +1,7 @@
 import fs from 'fs/promises'
 import path from 'path'
 import os from 'os'
+import type { PinnedFactsStore } from './pinned-facts.ts'
 
 const DEFAULT_PERSONA = `You are gpt, a Discord bot backed by an OpenAI model. Be helpful, concise, and match the channel's tone. You can respond with text, an emoji reaction, or both.`
 
@@ -11,6 +12,11 @@ function stateDir(): string {
 export class PersonaLoader {
   private persona: string = DEFAULT_PERSONA
   private activePersonaFile: string = 'persona.md'
+  private pinnedFacts: PinnedFactsStore | null = null
+
+  setPinnedFactsStore(store: PinnedFactsStore): void {
+    this.pinnedFacts = store
+  }
 
   async load(filename?: string): Promise<void> {
     if (filename) this.activePersonaFile = filename
@@ -28,8 +34,12 @@ export class PersonaLoader {
     }
   }
 
-  buildSystemPrompt(_channelId: string): string {
-    // v0.2: persona only. Pinned-facts + summaries hooked in later versions.
-    return this.persona
+  buildSystemPrompt(channelId: string): string {
+    const pinned = this.pinnedFacts?.readForChannelSync(channelId) ?? ''
+    const sections: string[] = [this.persona]
+    if (pinned) {
+      sections.push(`## Pinned facts for this channel\n\n${pinned}`)
+    }
+    return sections.join('\n\n---\n\n')
   }
 }
