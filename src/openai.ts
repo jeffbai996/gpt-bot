@@ -19,6 +19,11 @@ export interface RespondInput {
   userName: string
   model: string
   reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high'
+  // Multimodal content parts. `imageParts` get spliced into the user message
+  // alongside the text; `extraText` is appended below userMessage (e.g. audio
+  // transcripts, file extracts, "skipped" notices).
+  imageParts?: OpenAI.Chat.Completions.ChatCompletionContentPartImage[]
+  extraText?: string
   onEvent?: (event: LifecycleEvent) => void
 }
 
@@ -77,13 +82,24 @@ export class OpenAIClient {
   }
 
   async respond(input: RespondInput): Promise<RespondResult> {
-    const { systemPrompt, history, userMessage, userName, model, reasoningEffort, onEvent } = input
+    const { systemPrompt, history, userMessage, userName, model, reasoningEffort, imageParts, extraText, onEvent } = input
     const start = Date.now()
+
+    // Build the user message. Text-only path stays a plain string for legacy
+    // shape compatibility. Multimodal path uses the content-parts array.
+    const userText = extraText
+      ? `${userName}: ${userMessage}\n\n${extraText}`
+      : `${userName}: ${userMessage}`
+
+    const userContent: OpenAI.Chat.Completions.ChatCompletionUserMessageParam['content'] =
+      (imageParts && imageParts.length > 0)
+        ? [{ type: 'text', text: userText }, ...imageParts]
+        : userText
 
     const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
       { role: 'system', content: `${systemPrompt}\n\n---\n\n${STRUCTURED_OUTPUT_INSTRUCTION}` },
       ...history,
-      { role: 'user', content: `${userName}: ${userMessage}` }
+      { role: 'user', content: userContent }
     ]
 
     const reasoning = isReasoningModel(model)

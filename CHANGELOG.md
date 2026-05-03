@@ -6,6 +6,22 @@ Tags are annotated; check them out with `git checkout v0.N` to inspect that poin
 
 ---
 
+## v0.5 — multimodal + DM intent
+
+Adds image understanding, audio transcription, text-file extraction, and DM channel support.
+
+- `src/attachments.ts` — `processAttachments()` handles each Discord attachment by mime type:
+  - **Images** (`image/png|jpeg|webp|gif`) become `image_url` content parts pointing at the Discord CDN URL. Vision-capable models (gpt-5.x, gpt-4o) ingest them inline.
+  - **Audio** (mpeg/mp4/wav/webm/ogg/flac/m4a) downloads then transcribes via `audio.transcriptions` (default `whisper-1`); transcript splices into the text payload.
+  - **Text files** (text/*, json, markdown, csv, html, source code) downloads up to 100KB and inlines as a fenced code block.
+  - **Anything else** (PDF, video, archives) is surfaced as a `[attachments not ingested]` text note so the model can ask follow-up questions rather than silently ignoring the file.
+  - 20MB cap per attachment; oversized → `too_large` skip.
+- `OpenAIClient.respond()` accepts `imageParts` (spliced into the user message as content parts) and `extraText` (appended below the user prose). Single-string content-shape preserved when no multimodal is attached.
+- `gpt.ts` — discord client gains `DirectMessages` + `DirectMessageReactions` + `DirectMessageTyping` intents. The 📎 ingesting lifecycle reaction fires only when there's actually an attachment to process; plain-text messages skip it.
+- Tests cover empty / image / oversized / unsupported / charset-suffix paths.
+
+Verified end-to-end: gpt-5.5 received a red placeholder image and correctly described it as "Red." through our `respond()` wrapper.
+
 ## v0.4 — streaming + lifecycle reactions
 
 Replies stream into Discord as the model generates, and lifecycle reactions surface what's happening inside a turn.

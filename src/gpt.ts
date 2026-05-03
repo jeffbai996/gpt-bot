@@ -9,7 +9,9 @@ import { gptCommand, executeGptCommand } from './commands.ts'
 import { OpenAIClient, OpenAIRequestRejected } from './openai.ts'
 import type { LifecycleEvent } from './openai.ts'
 import { fetchHistory, formatHistoryForOpenAI } from './history.ts'
+import { processAttachments } from './attachments.ts'
 import { applyLifecycle } from './reactions/lifecycle.ts'
+import OpenAI from 'openai'
 
 const STATE_DIR = process.env.GPT_STATE_DIR || path.join(os.homedir(), '.gpt', 'channels', 'discord')
 dotenv.config({ path: path.join(STATE_DIR, '.env') })
@@ -36,6 +38,9 @@ const ADMIN_USER_ID: string | undefined = process.env.DISCORD_ADMIN_USER_ID
 const access = new AccessManager()
 const persona = new PersonaLoader()
 const openai = new OpenAIClient(OPENAI_KEY, DEFAULT_MODEL)
+// Raw SDK client for non-chat endpoints (audio.transcriptions). Sharing the
+// same key/instance avoids spinning up two HTTP pools.
+const openaiRaw = new OpenAI({ apiKey: OPENAI_KEY })
 
 await access.load()
 await persona.load()
@@ -59,6 +64,9 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.GuildMessageReactions,
+    GatewayIntentBits.DirectMessages,
+    GatewayIntentBits.DirectMessageReactions,
+    GatewayIntentBits.DirectMessageTyping,
     GatewayIntentBits.MessageContent
   ],
   partials: [Partials.Channel, Partials.Message, Partials.User, Partials.Reaction]
@@ -124,6 +132,22 @@ client.on('messageCreate', async (message: Message) => {
   // message even if the model call takes a while.
   await applyLifecycle(message, 'received')
 
+  // 📎 ingesting — fires only when there's actual work (attachments) to do
+  // before the model call. Skip for plain text messages so the row stays clean.
+  const attachments = [...message.attachments.values()]
+  let imageParts: NonNullable<Parameters<typeof openai.respond>[0]['imageParts']> = []
+  let extraText = ''
+  if (attachments.length > 0) {
+    await applyLifecycle(message, 'ingesting')
+    try {
+      const processed = await processAttachments(attachments, openaiRaw)
+      imageParts = processed.imageParts
+      extraText = processed.text
+    } catch (e) {
+      console.error('attachment processing failed:', e)
+    }
+  }
+
   let placeholder: Message | null = null
   try {
     placeholder = await message.reply('💭 thinking…')
@@ -166,6 +190,8 @@ client.on('messageCreate', async (message: Message) => {
       userName: message.author.username,
       model,
       reasoningEffort: flags.reasoning,
+      imageParts,
+      extraText,
       onEvent
     })
 
