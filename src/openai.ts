@@ -162,17 +162,36 @@ export class OpenAIClient {
         let lastPartialEmit = ''
         let finishReason: string | null = null
 
+        let reasoningStartEmitted = false
         for await (const chunk of stream) {
           if (chunk.model) modelUsed = chunk.model
           const choice = chunk.choices?.[0]
           if (choice) {
             const delta = choice.delta as {
               content?: string | null
+              // o-series and gpt-5 reasoning models surface chain-of-thought
+              // summary deltas as `reasoning_content` (legacy o1 SDK shape)
+              // or via `reasoning.summary[*].delta` (newer responses). Cover
+              // both shapes; first nonempty token of either triggers the 🧠
+              // lifecycle reaction once per turn.
+              reasoning_content?: string | null
+              reasoning?: {
+                summary?: Array<{ delta?: string; text?: string }>
+              }
               tool_calls?: Array<{
                 index: number
                 id?: string
                 function?: { name?: string; arguments?: string }
               }>
+            }
+            if (!reasoningStartEmitted) {
+              const hasReasoning =
+                (typeof delta?.reasoning_content === 'string' && delta.reasoning_content.length > 0) ||
+                (delta?.reasoning?.summary?.some(s => (s.delta?.length ?? s.text?.length ?? 0) > 0) ?? false)
+              if (hasReasoning) {
+                reasoningStartEmitted = true
+                onEvent?.({ type: 'reasoning_start' })
+              }
             }
             if (delta?.content) {
               contentAcc += delta.content

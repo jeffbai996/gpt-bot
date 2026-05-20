@@ -238,6 +238,7 @@ async function handleUserMessage(
 
   const onEvent = (event: LifecycleEvent) => {
     if (event.type === 'thinking_start') { void applyLifecycle(message, 'thinking'); return }
+    if (event.type === 'reasoning_start') { void applyLifecycle(message, 'reasoning'); return }
     if (event.type === 'searching') { void applyLifecycle(message, 'searching'); return }
     if (event.type === 'tool_start') { void applyLifecycle(message, 'tooling'); return }
     if (event.type === 'partial' && workMessage) {
