@@ -4,7 +4,19 @@ Versioning is `0.MAJOR` (no patch level). Each version reflects a shippable feat
 
 Tags are annotated; check them out with `git checkout v0.N` to inspect that point.
 
+This repo is the OpenAI sibling of [gem-discord-bot](https://github.com/jeffbai996/gem-discord-bot). Same architecture (standalone daemon, structured-output reply, tool registry, reaction-driven actions, persistent summarization, MCP autoload). Versions track in parallel where the feature surface overlaps; they diverge where the underlying API does (e.g., Gemini's manual context caching has no OpenAI analog beyond automatic prefix caching).
+
 ---
+
+## v0.11 — 2026-05-19 — sister-repo parity sync
+
+Bring gpt-discord-bot up to gem v0.12 equivalent for production-ready parallel use in the same server.
+
+- **Reasoning lifecycle state wired** — `🧠 reasoning` reaction now fires when an o-series or gpt-5 reasoning model emits its first reasoning-summary delta. Covers both SDK shapes (`delta.reasoning_content` legacy o1, `delta.reasoning.summary[*].delta` newer responses-style). De-duped per turn. The OpenAI analog of Gem's `native_thinking` from gemini-3 thinking parts.
+- **Outbound react validator wired** — `isValidOutboundReactEmoji` existed in `reactions/vocabulary.ts` with full test coverage but was never imported. The model's structured-output `react` field is now gated; custom Discord emoji names (`:pack_sticker_14:` etc) get silently dropped + logged instead of bothering Discord with calls that return 10014 'Unknown Emoji'.
+- **Cache + reasoning token telemetry** — `RespondResult.usage` adds `cachedInputTokens` (from `prompt_tokens_details.cached_tokens`, OpenAI's automatic prefix caching) and `reasoningTokens` (from `completion_tokens_details.reasoning_tokens`, o-series + gpt-5 internal CoT cost). Accumulated across tool-loop iterations. Verbose footer renders both inline only when nonzero, e.g. `↑ 4,231 (cached 3,840) ↓ 512 (reasoning 192) » 2.3s gpt-5`.
+- **`/gpt cache info` slash subcommand** — rolling per-channel telemetry. `src/cache-stats.ts` ring-buffers the last 50 turns; `snapshot(channelId)` aggregates hit rate, totals, distinct models seen, window age. Card surfaces all that ephemerally. OpenAI's caching is automatic with no TTL/flush controls, so the card explains as much. (Gem's `/gemini cache ttl|flush` don't port — they're Gemini-specific.)
+- 8 new tests for `cache-stats` (empty channel, single turn, accumulation, ring-buffer cap, channel isolation, model tracking, null-usage skip, zero-input edge case). Total test count: 75 (up from 67).
 
 ## v0.10 — MCP autoload
 

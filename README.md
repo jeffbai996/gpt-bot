@@ -1,8 +1,8 @@
 # gpt-discord-bot
 
-OpenAI-backed Discord bot. Standalone TypeScript daemon. Sibling project to [gem-discord-bot](https://github.com/) — same shape, different brain, designed to coexist in the same guild without looping.
+OpenAI-backed Discord bot. Standalone TypeScript daemon. Sibling project to [gem-discord-bot](https://github.com/jeffbai996/gem-discord-bot) — same shape, different brain, designed to coexist in the same guild without looping.
 
-> **Status:** v0.10 — feature-complete first pass. See [CHANGELOG.md](./CHANGELOG.md) for the per-epoch breakdown.
+> **Status:** v0.11 — sister-repo parity sync. See [CHANGELOG.md](./CHANGELOG.md) for the per-epoch breakdown.
 
 ## What it does
 
@@ -10,7 +10,7 @@ OpenAI-backed Discord bot. Standalone TypeScript daemon. Sibling project to [gem
 - **Streaming** replies edit a `💭 thinking…` placeholder in place as tokens arrive.
 - **Multimodal** — images via OpenAI vision; audio transcribed via whisper; text/code files inlined; PDFs / video surfaced as `[attachments not ingested]` so the model knows about them.
 - **Tools** — `fetch_url` (with SSRF guard, Readability extraction), `web_search` (via search-preview model side-call), `search_memory` (semantic recall over channel history), and any MCP server's tools (auto-registered via streamable-HTTP).
-- **Lifecycle reactions** — `👀 received → 🤔 thinking → ✅ replied`, with branches for `📎 ingesting`, `🌐 searching`, `🔧 tooling`, `✂️ truncated`, `🛑 blocked`, `⚠️ denied`, `❌ errored`.
+- **Lifecycle reactions** — `👀 received → 🤔 thinking → ✅ replied`, with branches for `📎 ingesting`, `🧠 reasoning` (o-series + gpt-5 CoT summary), `🌐 searching`, `🔧 tooling`, `✂️ truncated`, `🛑 blocked`, `⚠️ denied`, `❌ errored`.
 - **Reaction-driven actions** — user reactions on the bot's replies trigger 🔁 regenerate, 🔍 expand, 📌 pin (per-channel pinned-facts file injected into system prompt), ❌ delete, 🔇/🔊 mute toggle, ✏️ edit-on-next-message.
 - **Persistent semantic memory** — every allowed user message gets embedded (`text-embedding-3-small`) and stored in sqlite-vss. Background summarization rolls older messages into a per-channel summary that sits above the active history in the system prompt.
 
