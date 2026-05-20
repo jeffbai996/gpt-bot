@@ -42,6 +42,17 @@ export interface RespondResult extends ParsedResponse {
     inputTokens: number
     outputTokens: number
     totalTokens: number
+    // OpenAI's automatic prompt-prefix caching credits hits as
+    // prompt_tokens_details.cached_tokens in the response usage block.
+    // gpt-4o, gpt-5, and the o-series all support it; cached input tokens
+    // bill at ~50% of the normal rate. Surface here so callers can log
+    // cache health without re-parsing the upstream payload.
+    cachedInputTokens: number
+    // reasoning_tokens are billed separately on o-series + gpt-5 (internal
+    // chain-of-thought). Already counted toward outputTokens but worth
+    // surfacing for telemetry (lets you see how much the model spent
+    // reasoning vs replying).
+    reasoningTokens: number
   } | null
   finishReason: string | null
   durationMs: number
@@ -218,17 +229,29 @@ export class OpenAIClient {
             if (choice.finish_reason) finishReason = choice.finish_reason
           }
           if (chunk.usage) {
+            // OpenAI's usage block has optional nested details:
+            //   prompt_tokens_details.cached_tokens — auto prompt caching hits
+            //   completion_tokens_details.reasoning_tokens — o-series CoT cost
+            // Both default to 0 when unset (older models / non-reasoning paths).
+            const usage = chunk.usage as typeof chunk.usage & {
+              prompt_tokens_details?: { cached_tokens?: number }
+              completion_tokens_details?: { reasoning_tokens?: number }
+            }
             const u = {
-              inputTokens: chunk.usage.prompt_tokens ?? 0,
-              outputTokens: chunk.usage.completion_tokens ?? 0,
-              totalTokens: chunk.usage.total_tokens ?? 0
+              inputTokens: usage.prompt_tokens ?? 0,
+              outputTokens: usage.completion_tokens ?? 0,
+              totalTokens: usage.total_tokens ?? 0,
+              cachedInputTokens: usage.prompt_tokens_details?.cached_tokens ?? 0,
+              reasoningTokens: usage.completion_tokens_details?.reasoning_tokens ?? 0,
             }
             // Accumulate across iterations; later turns add to earlier ones.
             totalUsage = totalUsage
               ? {
                   inputTokens: totalUsage.inputTokens + u.inputTokens,
                   outputTokens: totalUsage.outputTokens + u.outputTokens,
-                  totalTokens: totalUsage.totalTokens + u.totalTokens
+                  totalTokens: totalUsage.totalTokens + u.totalTokens,
+                  cachedInputTokens: totalUsage.cachedInputTokens + u.cachedInputTokens,
+                  reasoningTokens: totalUsage.reasoningTokens + u.reasoningTokens,
                 }
               : u
           }

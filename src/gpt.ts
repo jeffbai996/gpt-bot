@@ -285,9 +285,25 @@ async function handleUserMessage(
       }
     }
 
-    const verbose = flags.verbose && result.usage
-      ? `\n-# \`↑ ${result.usage.inputTokens.toLocaleString('en-US')} · ↓ ${result.usage.outputTokens.toLocaleString('en-US')} · » ${(result.durationMs / 1000).toFixed(1)}s · ${result.modelUsed}\``
-      : ''
+    // Verbose footer surfaces token cost. Cache + reasoning shards only
+    // render when nonzero so the footer stays compact for cheap turns.
+    const verbose = (() => {
+      if (!flags.verbose || !result.usage) return ''
+      const u = result.usage
+      const parts = [
+        `↑ ${u.inputTokens.toLocaleString('en-US')}`,
+        ...(u.cachedInputTokens > 0
+          ? [`(cached ${u.cachedInputTokens.toLocaleString('en-US')})`]
+          : []),
+        `↓ ${u.outputTokens.toLocaleString('en-US')}`,
+        ...(u.reasoningTokens > 0
+          ? [`(reasoning ${u.reasoningTokens.toLocaleString('en-US')})`]
+          : []),
+        `» ${(result.durationMs / 1000).toFixed(1)}s`,
+        result.modelUsed,
+      ]
+      return `\n-# \`${parts.join(' · ')}\``
+    })()
 
     const body = (result.reply ?? '').trim() + verbose
 
