@@ -11,6 +11,7 @@ import type { LifecycleEvent } from './openai.ts'
 import { fetchHistory, formatHistoryForOpenAI } from './history.ts'
 import { processAttachments } from './attachments.ts'
 import { applyLifecycle } from './reactions/lifecycle.ts'
+import { isValidOutboundReactEmoji } from './reactions/vocabulary.ts'
 import { buildDefaultRegistry } from './tools/index.ts'
 import { MemoryStore, embed } from './memory.ts'
 import { PinnedFactsStore } from './pinned-facts.ts'
@@ -271,7 +272,17 @@ async function handleUserMessage(
     })
 
     if (result.react) {
-      try { await message.react(result.react) } catch (e) { console.error('react failed:', e) }
+      // Outbound react validator: the model occasionally emits custom Discord
+      // emoji names from past channel context (`:pack_sticker_14:`, `:foo:123`),
+      // which the reactions PUT endpoint rejects with 'Unknown Emoji' (10014)
+      // unless the bot shares a server hosting that emoji. Silently drop
+      // anything that isn't a pure Unicode emoji to spare Discord (and the
+      // log) the noise. The reply still posts; only the react is suppressed.
+      if (isValidOutboundReactEmoji(result.react)) {
+        try { await message.react(result.react) } catch (e) { console.error('react failed:', e) }
+      } else {
+        console.log(`[react] dropped invalid outbound emoji: ${JSON.stringify(result.react)}`)
+      }
     }
 
     const verbose = flags.verbose && result.usage
