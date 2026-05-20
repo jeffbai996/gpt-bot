@@ -1,0 +1,95 @@
+/**
+ * Rolling per-channel cache + token telemetry.
+ *
+ * OpenAI's automatic prompt-prefix caching has no manual surface — you can't
+ * create / inspect / flush a cache from the API. Cached hits show up after
+ * the fact in `usage.prompt_tokens_details.cached_tokens`. To give operators
+ * visibility, we keep a small ring buffer of recent turns per channel and
+ * compute hit-rate + averages on demand via /gpt cache info.
+ *
+ * Bounded memory: WINDOW_SIZE turns per channel, no eviction (per-channel
+ * Map grows with active channels, which is fine — squad has <20 channels).
+ */
+import type { RespondResult } from './openai.ts'
+
+const WINDOW_SIZE = 50  // last N turns per channel
+
+interface TurnRecord {
+  ts: number
+  inputTokens: number
+  outputTokens: number
+  cachedInputTokens: number
+  reasoningTokens: number
+  model: string
+}
+
+const channelStats = new Map<string, TurnRecord[]>()
+
+export function recordTurn(channelId: string, result: RespondResult): void {
+  if (!result.usage) return
+  const buf = channelStats.get(channelId) ?? []
+  buf.push({
+    ts: Date.now(),
+    inputTokens: result.usage.inputTokens,
+    outputTokens: result.usage.outputTokens,
+    cachedInputTokens: result.usage.cachedInputTokens,
+    reasoningTokens: result.usage.reasoningTokens,
+    model: result.modelUsed,
+  })
+  if (buf.length > WINDOW_SIZE) buf.splice(0, buf.length - WINDOW_SIZE)
+  channelStats.set(channelId, buf)
+}
+
+export interface CacheSnapshot {
+  turns: number
+  inputTokens: number
+  outputTokens: number
+  cachedInputTokens: number
+  reasoningTokens: number
+  cacheHitRate: number  // 0-1, cached / input
+  oldestTs: number | null
+  newestTs: number | null
+  models: string[]      // distinct models seen in window
+}
+
+export function snapshot(channelId: string): CacheSnapshot {
+  const buf = channelStats.get(channelId) ?? []
+  if (buf.length === 0) {
+    return {
+      turns: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedInputTokens: 0,
+      reasoningTokens: 0,
+      cacheHitRate: 0,
+      oldestTs: null,
+      newestTs: null,
+      models: [],
+    }
+  }
+  let inp = 0, out = 0, cached = 0, reason = 0
+  const models = new Set<string>()
+  for (const t of buf) {
+    inp += t.inputTokens
+    out += t.outputTokens
+    cached += t.cachedInputTokens
+    reason += t.reasoningTokens
+    models.add(t.model)
+  }
+  return {
+    turns: buf.length,
+    inputTokens: inp,
+    outputTokens: out,
+    cachedInputTokens: cached,
+    reasoningTokens: reason,
+    cacheHitRate: inp > 0 ? cached / inp : 0,
+    oldestTs: buf[0].ts,
+    newestTs: buf[buf.length - 1].ts,
+    models: [...models],
+  }
+}
+
+// Test-only: reset all state.
+export function _reset(): void {
+  channelStats.clear()
+}

@@ -1,6 +1,7 @@
 import { SlashCommandBuilder, PermissionFlagsBits, ChatInputCommandInteraction } from 'discord.js'
 import { AccessManager, type ReasoningEffort } from './access.ts'
 import { PersonaLoader } from './persona.ts'
+import { snapshot as cacheSnapshot } from './cache-stats.ts'
 
 const ALLOWED_MODELS = ['gpt-5.5', 'gpt-5.4-mini', 'o3'] as const
 
@@ -33,6 +34,11 @@ export const gptCommand = new SlashCommandBuilder()
   .addSubcommand(s => s
     .setName('compact')
     .setDescription('Force a context-summary rollup now, regardless of the message threshold')
+    .addChannelOption(o => o.setName('channel').setDescription('Channel (defaults to current)').setRequired(false))
+  )
+  .addSubcommand(s => s
+    .setName('cache')
+    .setDescription('Show recent prompt-cache hit telemetry for this channel (rolling window of last 50 turns).')
     .addChannelOption(o => o.setName('channel').setDescription('Channel (defaults to current)').setRequired(false))
   )
   .addSubcommand(s => s
@@ -126,6 +132,45 @@ export async function executeGptCommand(
       } catch (e: any) {
         return interaction.editReply(`❌ compact failed: ${e?.message ?? String(e)}`)
       }
+    }
+
+    if (subcommand === 'cache') {
+      const channel = interaction.options.getChannel('channel') ?? interaction.channel
+      if (!channel) {
+        return interaction.reply({ content: '❌ No channel resolved.', ephemeral: true })
+      }
+      const snap = cacheSnapshot(channel.id)
+      if (snap.turns === 0) {
+        return interaction.reply({
+          content: `📊 <#${channel.id}> no turns recorded yet (rolling window is empty — try chatting first).`,
+          ephemeral: true
+        })
+      }
+      const ageMs = snap.newestTs && snap.oldestTs ? snap.newestTs - snap.oldestTs : 0
+      const ageMin = (ageMs / 60000).toFixed(1)
+      const hitPct = (snap.cacheHitRate * 100).toFixed(1)
+      const inK = (snap.inputTokens / 1000).toFixed(1)
+      const cachedK = (snap.cachedInputTokens / 1000).toFixed(1)
+      const outK = (snap.outputTokens / 1000).toFixed(1)
+      const reasoningK = (snap.reasoningTokens / 1000).toFixed(1)
+      const reasoningLine = snap.reasoningTokens > 0
+        ? `\nReasoning tokens: ${reasoningK}k (counted in output, billed separately)`
+        : ''
+      const modelsLine = snap.models.length > 0
+        ? `\nModels seen: ${snap.models.join(', ')}`
+        : ''
+      return interaction.reply({
+        content: [
+          `📊 <#${channel.id}> prompt-cache telemetry (last ${snap.turns} turns, window ${ageMin}min)`,
+          '```',
+          `cache hit rate: ${hitPct}%`,
+          `input tokens:   ${inK}k total · ${cachedK}k cached (50% rate)`,
+          `output tokens:  ${outK}k`,
+          '```' + reasoningLine + modelsLine,
+          `_OpenAI caches prompt prefixes automatically — no TTL or flush controls. Cached tokens bill at ~50% of the input rate._`
+        ].join('\n'),
+        ephemeral: true
+      })
     }
 
     if (subcommand === 'set') {

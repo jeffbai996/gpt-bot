@@ -12,6 +12,7 @@ import { fetchHistory, formatHistoryForOpenAI } from './history.ts'
 import { processAttachments } from './attachments.ts'
 import { applyLifecycle } from './reactions/lifecycle.ts'
 import { isValidOutboundReactEmoji } from './reactions/vocabulary.ts'
+import { recordTurn as recordCacheTurn } from './cache-stats.ts'
 import { buildDefaultRegistry } from './tools/index.ts'
 import { MemoryStore, embed } from './memory.ts'
 import { PinnedFactsStore } from './pinned-facts.ts'
@@ -270,6 +271,9 @@ async function handleUserMessage(
       userId,
       onEvent
     })
+
+    // Stash usage in the rolling per-channel telemetry buffer for `/gpt cache info`.
+    recordCacheTurn(channelId, result)
 
     if (result.react) {
       // Outbound react validator: the model occasionally emits custom Discord
