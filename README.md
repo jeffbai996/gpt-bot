@@ -33,6 +33,14 @@ npm run start
 
 State (allowlist, persona, embeddings DB, summaries, pinned facts) lives at `~/.gpt/channels/discord/` by default. Override with `GPT_STATE_DIR`.
 
+### Cost guardrails (env-tunable)
+
+- `GPT_MODEL` — default model for unconfigured channels (default `gpt-5.4-mini`; was `gpt-5.5` until a per-channel override was easy to forget).
+- `GPT_HISTORY_TOKEN_BUDGET` — approx max tokens of conversation history sent per turn (default `8000`). Older messages get dropped oldest-first; at least 3 most recent are always kept.
+- `GPT_MAX_TOOL_LOOPS` — max tool-call iterations per response before bail-out (default `3`; was `5`).
+- `GPT_SUMMARIZATION_MODEL` — model used for rolling channel summaries (default `gpt-5.4-mini`).
+- `GPT_SUMMARIZATION_THRESHOLD` / `GPT_SUMMARIZATION_BATCH_LIMIT` — when and how many messages to summarize per pass.
+
 ### Slash commands
 
 - `/gpt allow <user>` — add a user to the allowlist.
