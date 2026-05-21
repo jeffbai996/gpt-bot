@@ -8,6 +8,16 @@ This repo is the OpenAI sibling of [gem-discord-bot](https://github.com/jeffbai9
 
 ---
 
+## v0.12 — 2026-05-21 — second parity sync (post-gem-voice)
+
+Catches up with gem-discord-bot changes that landed during gem's voice work (May 19-20). Voice itself is deferred — gem-voice is gem-specific (Gemini Live API + custom IPC daemon) and OpenAI's Realtime equivalent would need its own daemon; not in scope for this pass.
+
+- **Per-guild persona override** — `PersonaLoader.load()` now also scans the state dir for `persona.<guildId>.md` siblings (where guildId is a 17-20 digit Discord snowflake). `buildSystemPrompt` takes an optional guildId and prefers the per-guild override when present. Falls through to the default for DMs (no guildId) and guilds without an override. Lookup is O(1) on an in-memory Map populated at load. (Gem parity: ports `dc10e5a9`.)
+- **`/gpt model` — swap default model + auto-restart** — new top-level subcommand. Validates against `ALLOWED_MODELS`, rewrites `OPENAI_MODEL` in `<GPT_STATE_DIR>/.env` atomically (tmp+rename, preserves comments/ordering), replies with confirmation, then schedules a detached `systemctl --user restart gpt` after 1.5s. The per-channel `/gpt set model` override still works and takes precedence at request time. New module: `src/restart.ts` with `rewriteEnvVar` + `scheduleSelfRestart`. (Gem parity: ports `b0193187`.)
+- **Parser-fix verified no-op** — gem's `42063eb3` fix (unescape literal `\n` in `parseResponse` JSON-fail fallback) doesn't apply. gpt's `parseStructuredReply` + `extractPartialReply` already handle `\n`/`\r`/`\t` character-by-character and the fallback path doesn't return raw escaped strings.
+- **Voice deferred** — gem shipped `7c7fe01e` (VoiceManager), `9939a05f` (/voice slash commands), `dddd4cf9` (intent + wiring), and follow-up debug commits. The architecture requires a separate `gem-voice` IPC daemon (Unix socket at `/tmp/gem-voice.sock`) that opens the voice WebSocket itself. Porting cleanly to gpt would require building an OpenAI Realtime equivalent daemon — out of scope here. Gpt's discord.js client doesn't yet request the `GuildVoiceStates` intent and has no `/gpt voice` subcommand.
+- 6 new tests for `rewriteEnvVar` (replace-in-place, comments+ordering preserved, append-if-missing with newline, file-creates-if-missing, atomic-no-tmp-left, prefix-key rejection). Total test count: 81 (up from 75).
+
 ## v0.11 — 2026-05-19 — sister-repo parity sync
 
 Bring gpt-discord-bot up to gem v0.12 equivalent for production-ready parallel use in the same server.
