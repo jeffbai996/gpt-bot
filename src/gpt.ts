@@ -41,7 +41,10 @@ if (!process.env.OPENAI_API_KEY) {
 const DISCORD_TOKEN: string = process.env.DISCORD_BOT_TOKEN
 const APP_ID: string = process.env.DISCORD_APP_ID
 const OPENAI_KEY: string = process.env.OPENAI_API_KEY
-const DEFAULT_MODEL: string = process.env.GPT_MODEL || 'gpt-5.5'
+// Default to the cheap model. gpt-5.5 is $5/$30 per 1M tokens — 6x the cost
+// of gpt-5.4-mini ($0.75/$4.50). Channels can still override via
+// /gpt set model gpt-5.5 (see commands.ts ALLOWED_MODELS).
+const DEFAULT_MODEL: string = process.env.GPT_MODEL || 'gpt-5.4-mini'
 const ADMIN_USER_ID: string | undefined = process.env.DISCORD_ADMIN_USER_ID
 
 const access = new AccessManager()

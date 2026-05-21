@@ -6,7 +6,7 @@ OpenAI-backed Discord bot. Standalone TypeScript daemon. Sibling project to [gem
 
 ## What it does
 
-- **Chat** in allowlisted Discord channels. Per-channel model switch between `gpt-5.5` (default), `gpt-5.4-mini`, `o3`. Reasoning effort tunable for the o-series.
+- **Chat** in allowlisted Discord channels. Per-channel model switch between `gpt-5.4-mini` (default — ~6x cheaper), `gpt-5.5`, `o3`. Reasoning effort tunable for the o-series.
 - **Streaming** replies edit a `💭 thinking…` placeholder in place as tokens arrive.
 - **Multimodal** — images via OpenAI vision; audio transcribed via whisper; text/code files inlined; PDFs / video surfaced as `[attachments not ingested]` so the model knows about them.
 - **Tools** — `fetch_url` (with SSRF guard, Readability extraction), `web_search` (via search-preview model side-call), `search_memory` (semantic recall over channel history), and any MCP server's tools (auto-registered via streamable-HTTP).
