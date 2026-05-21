@@ -141,7 +141,11 @@ export class OpenAIClient {
     let totalUsage: RespondResult['usage'] = null
     let modelUsed = model
     let lastFinish: string | null = null
-    const MAX_LOOPS = 5
+    // Tool-loop cap. 3 rounds covers realistic tool chains (e.g. fetch then
+    // summarize) without giving a misbehaving model room to spin 5 expensive
+    // round-trips before giving up. Override with GPT_MAX_TOOL_LOOPS=<n>.
+    // Was 5 — sister bot gem-discord-bot caps at 3, matching that here.
+    const MAX_LOOPS = parseInt(process.env.GPT_MAX_TOOL_LOOPS ?? '3', 10)
 
     try {
       for (let iter = 0; iter < MAX_LOOPS; iter++) {
@@ -306,7 +310,7 @@ export class OpenAIClient {
       onEvent?.({ type: 'done' })
       return {
         react: null,
-        reply: '⚠️ tool loop exceeded 5 iterations without a final answer',
+        reply: `⚠️ tool loop exceeded ${MAX_LOOPS} iterations without a final answer`,
         usage: totalUsage,
         finishReason: lastFinish ?? 'tool_loop_exhausted',
         durationMs: Date.now() - start,

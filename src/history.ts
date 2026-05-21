@@ -16,9 +16,31 @@ export interface HistoryMessage {
 }
 
 // Upper bound for the raw Discord fetch. Discord caps fetch at 100 per call.
-// Token-budget trimming is layered in v0.7+; for now we just take the most
-// recent 30 by default to bound the prompt size.
+// We fetch this many, then trimToTokenBudget() drops the oldest until the
+// remaining content fits within GPT_HISTORY_TOKEN_BUDGET.
 const HISTORY_RAW_LIMIT = 30
+
+// Approximate token-budget cap on conversation history sent per turn. The
+// previous behavior was "fetch last 30, send them all" — a chatty channel
+// with 30 multi-paragraph messages would silently send 10k+ tokens of
+// history on every reply. With GPT-5.5 at $5/$30 per 1M tokens that's
+// nontrivial cost per turn before the model has even started reasoning.
+//
+// 8k tokens covers ~12-20 typical Discord turns of context, which is plenty
+// for chat. Override via GPT_HISTORY_TOKEN_BUDGET=<n>.
+//
+// We approximate token count as chars/4 — accurate enough for budgeting
+// purposes without pulling in tiktoken. The budget is intentionally generous
+// (the trim is a fail-safe, not a tight squeeze).
+const HISTORY_TOKEN_BUDGET = parseInt(
+  process.env.GPT_HISTORY_TOKEN_BUDGET ?? '8000',
+  10,
+)
+const CHARS_PER_TOKEN_APPROX = 4
+
+// Always retain at least this many recent messages even if they exceed
+// the budget, so we never drop conversation completely.
+const MIN_RETAIN = 3
 
 export async function fetchHistory(
   channel: TextChannel | DMChannel | ThreadChannel,
@@ -94,5 +116,31 @@ export function formatHistoryForOpenAI(
       content
     })
   }
-  return out
+  return trimToTokenBudget(out)
+}
+
+/**
+ * Drop oldest messages until the total approximate token count fits within
+ * HISTORY_TOKEN_BUDGET. Always keeps at least MIN_RETAIN trailing messages
+ * so a single huge user message can't blank the whole context.
+ */
+function trimToTokenBudget(
+  msgs: OpenAI.Chat.Completions.ChatCompletionMessageParam[]
+): OpenAI.Chat.Completions.ChatCompletionMessageParam[] {
+  if (msgs.length <= MIN_RETAIN) return msgs
+
+  const tokenOf = (m: OpenAI.Chat.Completions.ChatCompletionMessageParam): number => {
+    const c = typeof m.content === 'string' ? m.content : JSON.stringify(m.content ?? '')
+    return Math.ceil(c.length / CHARS_PER_TOKEN_APPROX)
+  }
+
+  let total = msgs.reduce((s, m) => s + tokenOf(m), 0)
+  if (total <= HISTORY_TOKEN_BUDGET) return msgs
+
+  let trimmed = msgs.slice()
+  while (trimmed.length > MIN_RETAIN && total > HISTORY_TOKEN_BUDGET) {
+    const dropped = trimmed.shift()!
+    total -= tokenOf(dropped)
+  }
+  return trimmed
 }
