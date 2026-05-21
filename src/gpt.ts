@@ -184,7 +184,7 @@ async function handleUserMessage(
   const userId = message.author.id
   const flags = access.channelFlags(channelId)
   const model = flags.model ?? DEFAULT_MODEL
-  const systemPrompt = persona.buildSystemPrompt(channelId)
+  const systemPrompt = persona.buildSystemPrompt(channelId, message.guildId)
   const selfId = client.user?.id ?? ''
 
   let history: ReturnType<typeof formatHistoryForOpenAI> = []
