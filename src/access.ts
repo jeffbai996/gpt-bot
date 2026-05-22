@@ -18,6 +18,10 @@ export interface ChannelFlags {
   reasoning: ReasoningEffort
   showCode: boolean
   verbose: boolean
+  // requireMention isn't a "rendering" flag like the others — it sits at the
+  // top of ChannelConfig — but exposing it through ChannelFlags lets the
+  // /gpt set unified setter touch it without a separate command path.
+  requireMention?: boolean
 }
 
 export interface AccessFile {
@@ -146,6 +150,7 @@ export class AccessManager {
       ...(patch.reasoning !== undefined ? { reasoning: patch.reasoning } : {}),
       ...(patch.showCode !== undefined ? { showCode: patch.showCode } : {}),
       ...(patch.verbose !== undefined ? { verbose: patch.verbose } : {}),
+      ...(patch.requireMention !== undefined ? { requireMention: patch.requireMention } : {}),
     }
     await this.save()
     return this.data.channels[channelId]
@@ -158,6 +163,7 @@ export class AccessManager {
       reasoning: channel?.reasoning ?? DEFAULT_FLAGS.reasoning,
       showCode: channel?.showCode ?? DEFAULT_FLAGS.showCode,
       verbose: channel?.verbose ?? DEFAULT_FLAGS.verbose,
+      requireMention: channel?.requireMention,
     }
   }
 

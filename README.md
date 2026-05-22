@@ -47,7 +47,7 @@ State (allowlist, persona, embeddings DB, summaries, pinned facts) lives at `~/.
 - `/gpt revoke <user>` — remove access.
 - `/gpt channel <channel> <enabled> <require_mention>` — configure channel access.
 - `/gpt persona <filename>` — hot-swap the persona file (loaded from state dir).
-- `/gpt set <flag> <value> [<channel>]` — per-channel `model`, `reasoning`, `show_code`, or `verbose`.
+- `/gpt set <flag> <value> [<channel>]` — per-channel `model`, `reasoning`, `show_code`, `verbose`, or `require_mention` (flip the @-mention gate without re-running `/gpt channel`).
 - `/gpt compact [<channel>]` — force a context-summary rollup now.
 
 SIGHUP reloads `access.json` and `persona.md` without a restart.

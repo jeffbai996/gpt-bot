@@ -60,7 +60,7 @@ export const gptCommand = new SlashCommandBuilder()
   )
   .addSubcommand(s => s
     .setName('set')
-    .setDescription('Set a per-channel flag (model, reasoning, show_code, verbose). Defaults to current channel.')
+    .setDescription('Set a per-channel flag (model, reasoning, show_code, verbose, require_mention). Defaults to current channel.')
     .addStringOption(o => o
       .setName('flag')
       .setDescription('Which flag to set')
@@ -70,6 +70,7 @@ export const gptCommand = new SlashCommandBuilder()
         { name: 'reasoning — minimal | low | medium | high (o-series only)', value: 'reasoning' },
         { name: 'show_code — render tool-call artifacts', value: 'show_code' },
         { name: 'verbose — usage/finish_reason footer', value: 'verbose' },
+        { name: 'require_mention — only respond when @-mentioned', value: 'require_mention' },
       )
     )
     .addStringOption(o => o
@@ -249,7 +250,7 @@ export async function executeGptCommand(
             })
           }
           updated = await access.setChannelFlags(channel.id, { reasoning: rawValue as ReasoningEffort })
-        } else if (flag === 'show_code' || flag === 'verbose') {
+        } else if (flag === 'show_code' || flag === 'verbose' || flag === 'require_mention') {
           const truthy = ['true', 't', 'yes', 'y', 'on', '1']
           const falsy = ['false', 'f', 'no', 'n', 'off', '0']
           let parsed: boolean
@@ -261,17 +262,20 @@ export async function executeGptCommand(
               ephemeral: true
             })
           }
-          const fieldKey = flag === 'show_code' ? 'showCode' : 'verbose'
+          const fieldKey =
+            flag === 'show_code' ? 'showCode'
+            : flag === 'verbose' ? 'verbose'
+            : 'requireMention'
           updated = await access.setChannelFlags(channel.id, { [fieldKey]: parsed })
         } else {
           return interaction.reply({
-            content: `❌ unknown flag \`${flag}\`. Choices: model, reasoning, show_code, verbose.`,
+            content: `❌ unknown flag \`${flag}\`. Choices: model, reasoning, show_code, verbose, require_mention.`,
             ephemeral: true
           })
         }
 
         const modelDisplay = updated.model ?? '(default)'
-        const summary = `model=${modelDisplay}, reasoning=${updated.reasoning}, showCode=${updated.showCode}, verbose=${updated.verbose}`
+        const summary = `model=${modelDisplay}, reasoning=${updated.reasoning}, showCode=${updated.showCode}, verbose=${updated.verbose}, requireMention=${updated.requireMention}`
         return interaction.reply({
           content: `✅ <#${channel.id}> \`${flag}\` set. ${summary}`,
           ephemeral: true
