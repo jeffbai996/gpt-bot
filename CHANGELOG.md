@@ -20,7 +20,7 @@ Catches up with gem-discord-bot changes that landed during gem's voice work (May
 
 ## v0.11 — 2026-05-19 — sister-repo parity sync
 
-Bring gpt-discord-bot up to gem v0.12 equivalent for production-ready parallel use in the same server.
+Bring gpt-bot up to gem v0.12 equivalent for production-ready parallel use in the same server.
 
 - **Reasoning lifecycle state wired** — `🧠 reasoning` reaction now fires when an o-series or gpt-5 reasoning model emits its first reasoning-summary delta. Covers both SDK shapes (`delta.reasoning_content` legacy o1, `delta.reasoning.summary[*].delta` newer responses-style). De-duped per turn. The OpenAI analog of Gem's `native_thinking` from gemini-3 thinking parts.
 - **Outbound react validator wired** — `isValidOutboundReactEmoji` existed in `reactions/vocabulary.ts` with full test coverage but was never imported. The model's structured-output `react` field is now gated; custom Discord emoji names (`:pack_sticker_14:` etc) get silently dropped + logged instead of bothering Discord with calls that return 10014 'Unknown Emoji'.

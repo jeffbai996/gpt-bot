@@ -1,6 +1,6 @@
-# gpt-discord-bot — agent context
+# gpt-bot — agent context
 
-This document provides context for agents working on `gpt-discord-bot`.
+This document provides context for agents working on `gpt-bot`.
 
 ## Project Overview
 
@@ -33,7 +33,7 @@ Deploy flow (replace `<deploy-host>` and `<deploy-user>` with your own):
 
 ```bash
 git push origin main
-ssh <deploy-user>@<deploy-host> 'cd ~/gpt-discord-bot && git pull && npm install && systemctl --user restart gpt'
+ssh <deploy-user>@<deploy-host> 'cd ~/gpt-bot && git pull && npm install && systemctl --user restart gpt'
 ```
 
 Hot reload (no restart — reloads `access.json` and `persona.md` only):

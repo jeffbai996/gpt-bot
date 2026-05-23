@@ -6,7 +6,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 export async function connectMcpClient(url: string): Promise<Client> {
   const transport = new StreamableHTTPClientTransport(new URL(url))
   const client = new Client(
-    { name: 'gpt-discord-bot', version: '1.0.0' },
+    { name: 'gpt-bot', version: '1.0.0' },
     { capabilities: {} }
   )
   await client.connect(transport)

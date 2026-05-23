@@ -1,5 +1,5 @@
 {
-  "name": "gpt-discord-bot",
+  "name": "gpt-bot",
   "version": "0.12.0",
   "description": "OpenAI-backed Discord bot",
   "main": "src/gpt.ts",

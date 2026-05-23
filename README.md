@@ -1,4 +1,4 @@
-# gpt-discord-bot
+# gpt-bot
 
 OpenAI-backed Discord bot. Standalone TypeScript daemon. Sibling project to [gem-discord-bot](https://github.com/jeffbai996/gem-discord-bot) — same shape, different brain, designed to coexist in the same guild without looping.
 
@@ -24,7 +24,7 @@ Use this one when you want OpenAI's reasoning models or its specific tool-use sh
 
 ```bash
 git clone <this-repo>
-cd gpt-discord-bot
+cd gpt-bot
 npm install
 cp .env.example ~/.gpt/channels/discord/.env
 # Fill in OPENAI_API_KEY, DISCORD_BOT_TOKEN, DISCORD_APP_ID

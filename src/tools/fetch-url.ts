@@ -67,7 +67,7 @@ export const fetchUrlTool: Tool = {
         signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
         redirect: 'follow',
         headers: {
-          'User-Agent': 'gpt-discord-bot/1.0',
+          'User-Agent': 'gpt-bot/1.0',
           'Accept': 'text/html,text/plain,text/markdown,application/json,*/*;q=0.8'
         }
       })
