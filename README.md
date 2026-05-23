@@ -1,6 +1,6 @@
 # gpt-bot
 
-OpenAI-backed Discord bot. Standalone TypeScript daemon. Sibling project to [gem-discord-bot](https://github.com/jeffbai996/gem-discord-bot) — same shape, different brain, designed to coexist in the same guild without looping.
+OpenAI-backed Discord bot. Standalone TypeScript daemon. Sibling project to [gem-bot](https://github.com/jeffbai996/gem-bot) — same shape, different brain, designed to coexist in the same guild without looping.
 
 > **Status:** v0.12 — second parity sync (post-gem-voice). See [CHANGELOG.md](./CHANGELOG.md) for the per-epoch breakdown.
 
@@ -14,7 +14,7 @@ OpenAI-backed Discord bot. Standalone TypeScript daemon. Sibling project to [gem
 - **Reaction-driven actions** — user reactions on the bot's replies trigger 🔁 regenerate, 🔍 expand, 📌 pin (per-channel pinned-facts file injected into system prompt), ❌ delete, 🔇/🔊 mute toggle, ✏️ edit-on-next-message.
 - **Persistent semantic memory** — every allowed user message gets embedded (`text-embedding-3-small`) and stored in sqlite-vss. Background summarization rolls older messages into a per-channel summary that sits above the active history in the system prompt.
 
-## What makes this different from gem-discord-bot
+## What makes this different from gem-bot
 
 Same architectural pattern, different model family. Two bots can run in the same guild without double-replies — both ignore each other via `message.author.bot`.
 
