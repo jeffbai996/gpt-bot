@@ -48,7 +48,14 @@ export const fetchUrlTool: Tool = {
       return `fetch_url: ${e.message ?? 'invalid URL'}`
     }
 
-    if (process.env.FETCH_URL_TESTING_ALLOW_PRIVATE !== '1') {
+    // The private-IP guard can only be disabled OUTSIDE production. This keeps
+    // the testing escape hatch usable in CI/local, but a leaked
+    // FETCH_URL_TESTING_ALLOW_PRIVATE=1 in a prod deploy is inert — it can no
+    // longer open an SSRF path to localhost / RFC1918 internal services.
+    const allowPrivate =
+      process.env.FETCH_URL_TESTING_ALLOW_PRIVATE === '1' &&
+      process.env.NODE_ENV !== 'production'
+    if (!allowPrivate) {
       try {
         const lookups = await dns.lookup(url.hostname, { all: true })
         for (const l of lookups) {
