@@ -313,9 +313,11 @@ async function handleUserMessage(
           ? [`(reasoning ${u.reasoningTokens.toLocaleString('en-US')})`]
           : []),
         `» ${(result.durationMs / 1000).toFixed(1)}s`,
-        result.modelUsed,
       ]
-      return `\n-# \`${parts.join(' · ')}\``
+      // Leading blank line so the footer sits a line below the reply body
+      // (not crammed against the last line of text). The non-verbose path
+      // returns '' so a quiet reply gets no trailing whitespace.
+      return `\n\n-# \`${parts.join(' · ')}\``
     })()
 
     const body = (result.reply ?? '').trim() + verbose
