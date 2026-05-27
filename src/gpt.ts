@@ -15,6 +15,7 @@ import { isValidOutboundReactEmoji } from './reactions/vocabulary.ts'
 import { recordTurn as recordCacheTurn } from './cache-stats.ts'
 import { buildDefaultRegistry } from './tools/index.ts'
 import { MemoryStore, embed } from './memory.ts'
+import { shouldEmbed } from './embed-throttle.ts'
 import { PinnedFactsStore } from './pinned-facts.ts'
 import { PendingEditsStore } from './reactions/pending-edits.ts'
 import { handleReaction } from './reactions/handler.ts'
@@ -114,6 +115,11 @@ process.on('uncaughtException', err => console.error('uncaughtException:', err))
 // never thrown — ingestion failures shouldn't impact the reply flow.
 async function ingestMessage(message: Message): Promise<void> {
   if (!memoryStore) return
+  // Per-(channel,user) embedding throttle: skip the embed API call entirely
+  // when this author embedded within the cooldown window. Stops a chatty user
+  // or busy channel from burning a continuous embedding stream. The dropped
+  // message just isn't RAG-indexed; it's still in live Discord history.
+  if (!shouldEmbed(message.channel.id, message.author.id)) return
   try {
     const emb = await embed(openaiRaw, message.content)
     if (!emb) return
@@ -187,7 +193,7 @@ async function handleUserMessage(
   const systemPrompt = persona.buildSystemPrompt(channelId, message.guildId)
   const selfId = client.user?.id ?? ''
 
-  let history: ReturnType<typeof formatHistoryForOpenAI> = []
+  let history: Awaited<ReturnType<typeof formatHistoryForOpenAI>> = []
   try {
     if (
       message.channel.type === 0 /* GuildText */ ||
@@ -197,7 +203,7 @@ async function handleUserMessage(
       message.channel.type === 5 /* GuildAnnouncement */
     ) {
       const raw = await fetchHistory(message.channel as TextChannel | DMChannel | ThreadChannel, message.id)
-      history = formatHistoryForOpenAI(raw, selfId)
+      history = await formatHistoryForOpenAI(raw, selfId)
     }
   } catch (e) {
     console.error('history fetch failed:', e)
