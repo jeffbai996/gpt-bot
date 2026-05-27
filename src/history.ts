@@ -1,5 +1,6 @@
 import type { TextChannel, DMChannel, ThreadChannel } from 'discord.js'
 import type OpenAI from 'openai'
+import { selectWithinBudget, defaultCountTokens, type CountTokens } from './token-budget.ts'
 
 export interface HistoryAttachment {
   name: string
@@ -27,16 +28,18 @@ const HISTORY_RAW_LIMIT = 30
 // nontrivial cost per turn before the model has even started reasoning.
 //
 // 8k tokens covers ~12-20 typical Discord turns of context, which is plenty
-// for chat. Override via GPT_HISTORY_TOKEN_BUDGET=<n>.
+// for chat. Override via GPT_HISTORY_TOKEN_BUDGET=<n>. Set to 0 to disable the
+// token cap (keeps a recency window of the last 20 messages instead).
 //
-// We approximate token count as chars/4 — accurate enough for budgeting
-// purposes without pulling in tiktoken. The budget is intentionally generous
-// (the trim is a fail-safe, not a tight squeeze).
+// The actual windowing now lives in token-budget.ts (gem-parity: dynamic
+// token-aware windowing as a reusable, testable module). It approximates token
+// count as chars/4 — accurate enough for budgeting without pulling in tiktoken
+// — and the budget is intentionally generous (the trim is a fail-safe, not a
+// tight squeeze).
 const HISTORY_TOKEN_BUDGET = parseInt(
   process.env.GPT_HISTORY_TOKEN_BUDGET ?? '8000',
   10,
 )
-const CHARS_PER_TOKEN_APPROX = 4
 
 // Always retain at least this many recent messages even if they exceed
 // the budget, so we never drop conversation completely.
@@ -91,14 +94,24 @@ export function stripBotMetadata(text: string): string {
   return out.join('\n').trim()
 }
 
-// Convert Discord history into OpenAI Chat Completions message format. Bot's
-// own messages become `assistant`; everyone else becomes `user`. Author name
-// is prefixed inside `user` content because OpenAI's `name` field strips
-// non-ASCII and is finicky with Discord usernames.
-export function formatHistoryForOpenAI(
+// Convert Discord history into OpenAI Chat Completions message format, then
+// window it to fit the token budget. Bot's own messages become `assistant`;
+// everyone else becomes `user`. Author name is prefixed inside `user` content
+// because OpenAI's `name` field strips non-ASCII and is finicky with Discord
+// usernames.
+//
+// Async because windowing is delegated to selectWithinBudget (token-budget.ts),
+// whose counter signature is async to allow an exact-count backend later. With
+// the default chars/4 counter the await resolves synchronously.
+//
+// `budget` defaults to HISTORY_TOKEN_BUDGET; pass an explicit value (e.g. in
+// tests) to override. `countTokens` is pluggable for the same reason.
+export async function formatHistoryForOpenAI(
   messages: HistoryMessage[],
-  selfId: string
-): OpenAI.Chat.Completions.ChatCompletionMessageParam[] {
+  selfId: string,
+  budget: number = HISTORY_TOKEN_BUDGET,
+  countTokens: CountTokens = defaultCountTokens
+): Promise<OpenAI.Chat.Completions.ChatCompletionMessageParam[]> {
   const out: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = []
   for (const m of messages) {
     const isBot = m.authorId === selfId
@@ -116,31 +129,5 @@ export function formatHistoryForOpenAI(
       content
     })
   }
-  return trimToTokenBudget(out)
-}
-
-/**
- * Drop oldest messages until the total approximate token count fits within
- * HISTORY_TOKEN_BUDGET. Always keeps at least MIN_RETAIN trailing messages
- * so a single huge user message can't blank the whole context.
- */
-function trimToTokenBudget(
-  msgs: OpenAI.Chat.Completions.ChatCompletionMessageParam[]
-): OpenAI.Chat.Completions.ChatCompletionMessageParam[] {
-  if (msgs.length <= MIN_RETAIN) return msgs
-
-  const tokenOf = (m: OpenAI.Chat.Completions.ChatCompletionMessageParam): number => {
-    const c = typeof m.content === 'string' ? m.content : JSON.stringify(m.content ?? '')
-    return Math.ceil(c.length / CHARS_PER_TOKEN_APPROX)
-  }
-
-  let total = msgs.reduce((s, m) => s + tokenOf(m), 0)
-  if (total <= HISTORY_TOKEN_BUDGET) return msgs
-
-  let trimmed = msgs.slice()
-  while (trimmed.length > MIN_RETAIN && total > HISTORY_TOKEN_BUDGET) {
-    const dropped = trimmed.shift()!
-    total -= tokenOf(dropped)
-  }
-  return trimmed
+  return selectWithinBudget(out, countTokens, { budget, minRetain: MIN_RETAIN })
 }
