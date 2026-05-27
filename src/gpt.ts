@@ -153,7 +153,7 @@ client.once('ready', async () => {
   console.error(`gpt online as ${client.user?.tag} (${client.user?.id})`)
   client.user?.setPresence({
     status: 'online',
-    activities: [{ name: 'thinking', type: ActivityType.Custom, state: 'thinking' }]
+    activities: [{ name: '📎 actually, on reflection—', type: ActivityType.Custom, state: '📎 actually, on reflection—' }]
   })
 
   try {
