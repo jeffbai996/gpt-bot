@@ -3,9 +3,8 @@ import assert from 'node:assert/strict'
 import { isPrivateIp, validateUrl, extractContent, truncate } from '../src/tools/fetch-url-internal.ts'
 
 // These tests extend tools.test.ts with edge cases for the SSRF guard and the
-// content-type router. They document the CURRENT behavior of isPrivateIp,
-// including a known gap: CGNAT (100.64.0.0/10) is NOT classified private.
-// fetch-url-internal.ts is deliberately not modified here.
+// content-type router, covering isPrivateIp including CGNAT (100.64.0.0/10,
+// the Tailscale range), which the guard blocks.
 
 // ─────────────────────────── isPrivateIp: IPv4 boundaries ───────────────────────────
 
@@ -42,12 +41,14 @@ test('isPrivateIp: public addresses', () => {
   assert.equal(isPrivateIp('93.184.216.34'), false)
 })
 
-test('isPrivateIp: KNOWN GAP — CGNAT 100.64/10 not classified private', () => {
-  // RFC 6598 shared address space (100.64.0.0/10) is arguably SSRF-relevant
-  // but the current guard does NOT cover it. This test pins the present
-  // behavior so a future fix flips it deliberately, not by accident.
-  assert.equal(isPrivateIp('100.64.0.1'), false)
-  assert.equal(isPrivateIp('100.127.255.255'), false)
+test('isPrivateIp: CGNAT 100.64/10 classified private (Tailscale range)', () => {
+  // RFC 6598 shared address space (100.64.0.0/10) is SSRF-relevant — Tailscale
+  // assigns tailnet addresses from this range, so the guard must block it.
+  assert.equal(isPrivateIp('100.64.0.1'), true)
+  assert.equal(isPrivateIp('100.127.255.255'), true)
+  // /10 boundaries: 100.0–63 and 100.128–255 are public.
+  assert.equal(isPrivateIp('100.63.255.255'), false)
+  assert.equal(isPrivateIp('100.128.0.0'), false)
 })
 
 test('isPrivateIp: malformed IPv4 returns false', () => {

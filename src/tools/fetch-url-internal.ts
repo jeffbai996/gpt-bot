@@ -67,6 +67,10 @@ export function isPrivateIp(ip: string): boolean {
   if (a === 169 && b === 254) return true
   if (a === 172 && b >= 16 && b <= 31) return true
   if (a === 192 && b === 168) return true
+  // RFC 6598 CGNAT shared space 100.64.0.0/10. Tailscale assigns tailnet
+  // addresses from this range, so without it the bot could fetch internal
+  // mesh services (other hosts, MCP endpoints) via a 100.x URL — SSRF.
+  if (a === 100 && b >= 64 && b <= 127) return true
   return false
 }
 
