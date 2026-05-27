@@ -18,10 +18,16 @@ type SqliteVssMod = { load(db: any): void }
 
 let _Database: DatabaseCtor | null = null
 let _vss: SqliteVssMod | null = null
-let _loadFailed = false
+// A load failure used to latch permanently (_loadFailed = true), so one
+// transient hiccup disabled the memory store until process restart. Instead we
+// record WHEN the last failure happened and refuse retries only during a short
+// cooldown — after that the next call tries again. A genuinely broken ABI just
+// keeps failing every LOAD_RETRY_COOLDOWN_MS, which is cheap and self-healing.
+const LOAD_RETRY_COOLDOWN_MS = 60_000
+let _lastLoadFailureAt = 0
 async function loadNative(): Promise<{ Database: DatabaseCtor; vss: SqliteVssMod } | null> {
   if (_Database && _vss) return { Database: _Database, vss: _vss }
-  if (_loadFailed) return null
+  if (_lastLoadFailureAt && Date.now() - _lastLoadFailureAt < LOAD_RETRY_COOLDOWN_MS) return null
   try {
     const [dbMod, vssMod] = await Promise.all([
       import('better-sqlite3'),
@@ -29,10 +35,11 @@ async function loadNative(): Promise<{ Database: DatabaseCtor; vss: SqliteVssMod
     ])
     _Database = (dbMod.default ?? (dbMod as any)) as DatabaseCtor
     _vss = vssMod as SqliteVssMod
+    _lastLoadFailureAt = 0
     return { Database: _Database, vss: _vss }
   } catch (e) {
-    console.error('memory: native modules unavailable, RAG disabled:', e instanceof Error ? e.message : e)
-    _loadFailed = true
+    console.error('memory: native modules unavailable, RAG disabled (will retry):', e instanceof Error ? e.message : e)
+    _lastLoadFailureAt = Date.now()
     return null
   }
 }
