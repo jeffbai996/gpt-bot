@@ -60,7 +60,7 @@ export const gptCommand = new SlashCommandBuilder()
   )
   .addSubcommand(s => s
     .setName('set')
-    .setDescription('Set a per-channel flag (model, reasoning, show_code, verbose, require_mention). Defaults to current channel.')
+    .setDescription('Set a per-channel flag: model, reasoning, show_code, verbose, require_mention.')
     .addStringOption(o => o
       .setName('flag')
       .setDescription('Which flag to set')
