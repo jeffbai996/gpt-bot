@@ -320,7 +320,13 @@ async function handleUserMessage(
       return `\n\n-# \`${parts.join(' · ')}\``
     })()
 
-    const body = (result.reply ?? '').trim() + verbose
+    // Discord has no h1-h6 headings; markdown '#'..'######' render as a
+    // literal '#### text'. Convert heading lines to bold before sending so
+    // they read as headings. Inline '#' and '#tags' (no following space) are
+    // left alone. Applied to the reply only, not the verbose footer.
+    const headingsToBold = (t: string): string =>
+      t.replace(/^[ \t]*#{1,6}[ \t]+(.+?)[ \t]*#*$/gm, '**$1**')
+    const body = headingsToBold((result.reply ?? '').trim()) + verbose
 
     if (!body.trim()) {
       await applyLifecycle(message, 'silenced')
