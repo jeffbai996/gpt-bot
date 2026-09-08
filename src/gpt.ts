@@ -3,6 +3,7 @@ import { ActionRowBuilder, ButtonBuilder, ButtonStyle, Client, GatewayIntentBits
 import path from 'path'
 import os from 'os'
 import fs from 'fs'
+import { scanOutboundFiles } from './outbound-files.ts'
 import { setTimeout as sleep } from 'node:timers/promises'
 import dotenv from 'dotenv'
 import { AccessManager } from './access.ts'
@@ -1847,6 +1848,40 @@ async function handleUserMessage(
       if (pm) {
         presenceOwner.update(presenceTicket, pm[1].trim())
         result.reply = (result.reply ?? '').replace(/\[\[presence:\s*[^\]]+\]\]/ig, '').trim()
+      }
+    }
+
+    // Attach the local files the reply names. gpt-bot could already send images
+    // it GENERATED (materializeGeneratedImages turns data: URLs into temp
+    // files), but had no way to attach a file it merely names — so a .md on
+    // disk went out as a path in prose, same blind spot as claude-bot
+    // (Jeff 2026-09-08). Images may be named bare and resolve against the
+    // screenshot dirs; documents need an explicit form and an absolute path,
+    // so ordinary prose about a filename is never uploaded.
+    if (result.reply) {
+      const scan = scanOutboundFiles(result.reply, {
+        shotDirs: [
+          '/tmp',
+          process.env.COMPUTER_USE_OUTPUT_DIR
+            || process.env.PLAYWRIGHT_OUTPUT_DIR
+            || path.join(os.homedir(), '.cache', 'computer-use'),
+          os.homedir(),
+          path.join(os.homedir(), '.cache', 'computer-use'),
+          path.join(os.homedir(), '.cache', 'playwright-mcp-output'),
+          path.join(os.homedir(), '.cache', 'agent-images'),
+        ],
+        isFile: (f: string) => { try { return fs.statSync(f).isFile() } catch { return false } },
+        sizeOf: (f: string) => { try { return fs.statSync(f).size } catch { return 0 } },
+        join: path.join,
+        basename: path.basename,
+        isAbsolute: path.isAbsolute,
+      })
+      for (const skip of scan.skipped) {
+        console.error(`[attach] refused ${skip.path}: ${skip.reason}`)
+      }
+      if (scan.files.length) {
+        result.reply = scan.reply
+        result.files = [...(result.files ?? []), ...scan.files]
       }
     }
 
