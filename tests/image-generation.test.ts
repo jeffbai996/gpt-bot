@@ -16,6 +16,7 @@ test('reference image uses edits multipart and preserves cancellation', async ()
   await generateImage('key', { prompt: 'Give the cat a crown', images: [{ data: Buffer.from('source'), mimeType: 'image/png' }], signal: controller.signal }, async (url, init) => {
     assert.match(String(url), /\/images\/edits$/)
     assert.ok(init?.body instanceof FormData)
+    assert.equal(init.body.get('model'), 'gpt-image-2.5-sunburst')
     assert.equal(init.body.get('prompt'), 'Give the cat a crown')
     assert.equal(await (init.body.get('image[]') as Blob).text(), 'source')
     controller.abort()
@@ -30,7 +31,10 @@ test('image slash schema is valid and the handler defers then attaches', async (
   const key = process.env.OPENAI_API_KEY
   process.env.OPENAI_API_KEY = 'example-key'
   const events: string[] = []
-  globalThis.fetch = async () => Response.json({ data: [{ b64_json: 'aW1hZ2U=' }] })
+  globalThis.fetch = async (_url, init) => {
+    assert.equal(JSON.parse(String(init?.body)).model, 'gpt-image-2.5-sunburst')
+    return Response.json({ data: [{ b64_json: 'aW1hZ2U=' }] })
+  }
   const interaction = {
     user: { id: 'example-admin' },
     options: { getSubcommand: () => 'image', getString: (name: string) => name === 'prompt' ? 'A cube' : null },
@@ -55,7 +59,7 @@ test('unauthorized image request stops before reading options or calling API', a
 
 test('maps image options and decodes the attachment', async () => {
   const result = await generateImage('example-key', { prompt: 'A blue cube', size: '1536x1024', quality: 'low' }, async (_url, init) => {
-    assert.deepEqual(JSON.parse(String(init?.body)), { model: 'gpt-image-2', prompt: 'A blue cube', size: '1536x1024', quality: 'low', n: 1, output_format: 'png' })
+    assert.deepEqual(JSON.parse(String(init?.body)), { model: 'gpt-image-2.5-sunburst', prompt: 'A blue cube', size: '1536x1024', quality: 'low', n: 1, output_format: 'png' })
     return Response.json({ data: [{ b64_json: Buffer.from('image').toString('base64') }] })
   })
   assert.equal(result.attachment.toString(), 'image')
@@ -99,7 +103,7 @@ test('carries usage, cost and elapsed off the API response', async () => {
       data: [{ b64_json: Buffer.from('image').toString('base64') }],
       usage: { input_tokens: 30, output_tokens: 1_056, input_tokens_details: { text_tokens: 30, image_tokens: 0 } },
     }))
-  assert.equal(result.model, 'gpt-image-2')
+  assert.equal(result.model, 'gpt-image-2.5-sunburst')
   assert.equal(result.usage?.outputTokens, 1_056)
   assert.equal(result.costUsd, (30 * 5 + 1_056 * 30) / 1_000_000)
   assert.ok(result.elapsedMs >= 0)

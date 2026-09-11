@@ -9,6 +9,7 @@ import { formatUsageCounter } from './usage-counter.ts'
  * A rate that moves is a rate that silently lies. Update this table, do not
  * add a fudge factor to the total. */
 const IMAGE_RATES: Record<string, { textIn: number, imageIn: number, out: number }> = {
+  'gpt-image-2.5-sunburst': { textIn: 5.00, imageIn: 8.00, out: 30.00 },
   'gpt-image-2':      { textIn: 5.00, imageIn: 8.00, out: 30.00 },
   'gpt-image-1.5':    { textIn: 5.00, imageIn: 8.00, out: 32.00 },
   'gpt-image-1-mini': { textIn: 2.00, imageIn: 2.50, out: 8.00 },
@@ -46,8 +47,8 @@ export interface ImageOptions {
 export async function generateImage(apiKey: string, options: ImageOptions, request: typeof fetch = fetch) {
   const startedAt = Date.now()
   if (!apiKey) throw new Error('OPENAI_API_KEY is not configured.')
-  const model = options.model ?? 'gpt-image-2'
-  if (!['gpt-image-2', 'gpt-image-1.5', 'gpt-image-1-mini'].includes(model)) throw new Error('Unsupported image model.')
+  const model = options.model ?? 'gpt-image-2.5-sunburst'
+  if (!['gpt-image-2.5-sunburst', 'gpt-image-2', 'gpt-image-1.5', 'gpt-image-1-mini'].includes(model)) throw new Error('Unsupported image model.')
   const size = options.size ?? '1024x1024'
   const quality = options.quality ?? 'medium'
   if (!['1024x1024', '1536x1024', '1024x1536', 'auto'].includes(size)) throw new Error('Unsupported image size.')

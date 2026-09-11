@@ -168,6 +168,7 @@ export const gptCommand = new SlashCommandBuilder()
     .setDescription('Generate an image (billed to the OpenAI API)')
     .addStringOption(o => o.setName('prompt').setDescription('Describe the image').setRequired(true).setMaxLength(4000))
     .addStringOption(o => o.setName('model').setDescription('Default: GPT Image 2').addChoices(
+      { name: 'GPT Image 2.5 Sunburst (default)', value: 'gpt-image-2.5-sunburst' },
       { name: 'GPT Image 2', value: 'gpt-image-2' },
       { name: 'GPT Image 1.5', value: 'gpt-image-1.5' },
       { name: 'GPT Image 1 Mini (budget)', value: 'gpt-image-1-mini' },
@@ -395,7 +396,7 @@ export async function executeGptCommand(
     if (subcommand === 'image') {
       await interaction.deferReply()
       try {
-        const model = interaction.options.getString('model') ?? 'gpt-image-2'
+        const model = interaction.options.getString('model') ?? 'gpt-image-2.5-sunburst'
         const prompt = interaction.options.getString('prompt', true)
         const image = await generateImage(process.env.OPENAI_API_KEY ?? '', {
           prompt, model,
