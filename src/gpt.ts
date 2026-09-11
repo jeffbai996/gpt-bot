@@ -391,6 +391,18 @@ const openaiRaw = new OpenAI({ apiKey: OPENAI_KEY })
 const OLLAMA_URL = process.env.OLLAMA_URL || 'http://100.94.27.37:11434'
 const ollamaClient = new OpenAI({ apiKey: 'ollama', baseURL: OLLAMA_URL + '/v1' })
 
+// Embeddings run on THIS host's own Ollama, never the remote GPU box. That box
+// only holds a chat model, loaded deliberately, and has no embedding model on
+// it — so every passive message embed and every search_memory query was POSTing
+// /v1/embeddings there and getting 404, silently, roughly every 40s, for as
+// long as this has been deployed. Memory ingestion has not been working.
+//
+// Kept as a SEPARATE client rather than repointing OLLAMA_URL, because that URL
+// also carries summarization and the doctor model list, which do belong on the
+// remote box. Mirrors llm-bot's LLM_EMBEDDING_OLLAMA_URL split.
+const EMBEDDING_OLLAMA_URL = process.env.GPT_EMBEDDING_OLLAMA_URL || 'http://127.0.0.1:11434'
+const embeddingClient = new OpenAI({ apiKey: 'ollama', baseURL: EMBEDDING_OLLAMA_URL + '/v1' })
+
 // Realtime voice-to-voice, under `/gpt voice …`. Owner-gated; empty admin id =
 // nobody, which safely disables it. The real persona + tool registry are built
 // PER JOIN (they depend on the channel/guild) and passed into executeVoiceCommand,
@@ -415,7 +427,7 @@ if (!memoryStore) {
 // model) plus the Ollama client for the embedding-backed search_memory tool —
 // query embeddings MUST use the same backend as stored vectors or search is
 // garbage.
-const toolRegistry = await buildDefaultRegistry(openaiRaw, memoryStore, ollamaClient)
+const toolRegistry = await buildDefaultRegistry(openaiRaw, memoryStore, embeddingClient)
 
 // Summarization scheduler. Wires only when the SQLite-backed memory store is
 // available — summaries persist into the same conversation_summaries table.
@@ -490,7 +502,7 @@ function ingestTranscriptRow(row: {
     return false
   }
   if (allowEmbedding && shouldEmbed(row.channel_id, row.author_id)) {
-    void embed(ollamaClient, row.content).then(vector => {
+    void embed(embeddingClient, row.content).then(vector => {
       if (vector) memoryStore.insertMessageEmbedding(row.id, vector)
     }).catch(e => console.error('transcript embed failed:', e instanceof Error ? e.message : e))
   }
