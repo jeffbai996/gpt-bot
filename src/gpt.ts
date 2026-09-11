@@ -1,7 +1,7 @@
 import { PresenceOwner } from './presence-owner.ts'
 import { imageConversationInstruction, parseImageRequest, selectImageReference } from './image-conversation.ts'
 import { generateImage, quotePrompt } from './image-generation.ts'
-import { ActionRowBuilder, ButtonBuilder, ButtonStyle, Client, GatewayIntentBits, Partials, ActivityType, REST, Routes, type Message, type TextChannel, type DMChannel, type ThreadChannel } from 'discord.js'
+import { codeBlock, ActionRowBuilder, ButtonBuilder, ButtonStyle, Client, GatewayIntentBits, Partials, ActivityType, REST, Routes, type Message, type TextChannel, type DMChannel, type ThreadChannel } from 'discord.js'
 import path from 'path'
 import os from 'os'
 import fs from 'fs'
@@ -607,7 +607,7 @@ const channelTurns = new ChannelTurnRunner<QueuedChannelTurn>(
           onQueued: async position => {
             queueReceipt = await replyOrSend(
               carrier.message,
-              `⏳ queued globally · position ${position} · ${globalTurns.snapshot().running}/${MAX_GLOBAL_TURNS} running`,
+              codeBlock('text', `⏳ queued globally · position ${position} · ${globalTurns.snapshot().running}/${MAX_GLOBAL_TURNS} running`),
               !carrier.actor,
             )
           },
