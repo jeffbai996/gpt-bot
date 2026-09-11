@@ -400,8 +400,8 @@ const ollamaClient = new OpenAI({ apiKey: 'ollama', baseURL: OLLAMA_URL + '/v1' 
 // Kept as a SEPARATE client rather than repointing OLLAMA_URL, because that URL
 // also carries summarization and the doctor model list, which do belong on the
 // remote box. Mirrors llm-bot's LLM_EMBEDDING_OLLAMA_URL split.
-const EMBEDDING_OLLAMA_URL = process.env.GPT_EMBEDDING_OLLAMA_URL || 'http://127.0.0.1:11434'
-const embeddingClient = new OpenAI({ apiKey: 'ollama', baseURL: EMBEDDING_OLLAMA_URL + '/v1' })
+const LOCAL_OLLAMA_URL = process.env.GPT_LOCAL_OLLAMA_URL || 'http://127.0.0.1:11434'
+const localOllama = new OpenAI({ apiKey: 'ollama', baseURL: LOCAL_OLLAMA_URL + '/v1' })
 
 // Realtime voice-to-voice, under `/gpt voice …`. Owner-gated; empty admin id =
 // nobody, which safely disables it. The real persona + tool registry are built
@@ -427,7 +427,7 @@ if (!memoryStore) {
 // model) plus the Ollama client for the embedding-backed search_memory tool —
 // query embeddings MUST use the same backend as stored vectors or search is
 // garbage.
-const toolRegistry = await buildDefaultRegistry(openaiRaw, memoryStore, embeddingClient)
+const toolRegistry = await buildDefaultRegistry(openaiRaw, memoryStore, localOllama)
 
 // Summarization scheduler. Wires only when the SQLite-backed memory store is
 // available — summaries persist into the same conversation_summaries table.
@@ -436,13 +436,7 @@ const SUMMARIZATION_BATCH_LIMIT = parseInt(process.env.GPT_SUMMARIZATION_BATCH_L
 // Summarization runs on the local Ollama client with a local model by default
 // (was metered API inference on every rollup). Override the model via
 // GPT_SUMMARIZATION_MODEL; it resolves against whichever client is wired below.
-const CONFIGURED_SUMMARIZATION_MODEL = process.env.GPT_SUMMARIZATION_MODEL ?? DEFAULT_SUMMARIZATION_MODEL
-const SUMMARIZATION_MODEL = CONFIGURED_SUMMARIZATION_MODEL === 'qwen3.6:27b-mtp-q4_K_M'
-  ? 'qwen3.8:27b-mtp-q4_K_M'
-  : CONFIGURED_SUMMARIZATION_MODEL
-if (SUMMARIZATION_MODEL !== CONFIGURED_SUMMARIZATION_MODEL) {
-  console.error(`[summarization] retired model ${CONFIGURED_SUMMARIZATION_MODEL}; using ${SUMMARIZATION_MODEL}`)
-}
+const SUMMARIZATION_MODEL = process.env.GPT_SUMMARIZATION_MODEL ?? DEFAULT_SUMMARIZATION_MODEL
 const summaryStore = memoryStore ? SummaryStore.fromMemory(memoryStore) : null
 if (summaryStore) persona.setSummaryStore(summaryStore)
 const summarizer: SummarizationScheduler | null = (memoryStore && summaryStore)
@@ -457,7 +451,7 @@ const summarizer: SummarizationScheduler | null = (memoryStore && summaryStore)
           messageId: r.id
         }))
       },
-      client: ollamaClient,
+      client: localOllama,
       model: SUMMARIZATION_MODEL,
       threshold: SUMMARIZATION_THRESHOLD,
       batchLimit: SUMMARIZATION_BATCH_LIMIT
@@ -502,7 +496,7 @@ function ingestTranscriptRow(row: {
     return false
   }
   if (allowEmbedding && shouldEmbed(row.channel_id, row.author_id)) {
-    void embed(embeddingClient, row.content).then(vector => {
+    void embed(localOllama, row.content).then(vector => {
       if (vector) memoryStore.insertMessageEmbedding(row.id, vector)
     }).catch(e => console.error('transcript embed failed:', e instanceof Error ? e.message : e))
   }
