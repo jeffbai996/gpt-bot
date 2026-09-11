@@ -1,7 +1,27 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { formatUnifiedDiffTrace, renderTraceCards } from '../src/tool-trace.ts'
-import { buildCodexArgs, codexTimeoutMs, codexWatchdogPolicy, commentaryProgress, isInFlightStatusPing, isIntentionalCodexSilence, isMeaningfulCodexActivity, liveEvent, mapEffort, reasoningProgress, toolCallsFromCompletedItem } from '../src/codex-chat.ts'
+import { buildCodexArgs, codexTimeoutMs, codexWatchdogPolicy, commentaryProgress, formatResumeHistoryDelta, isInFlightStatusPing, isIntentionalCodexSilence, isMeaningfulCodexActivity, liveEvent, mapEffort, reasoningProgress, toolCallsFromCompletedItem } from '../src/codex-chat.ts'
+
+test('resumed Codex session receives Discord messages posted since its last reply', () => {
+  const delta = formatResumeHistoryDelta([
+    { role: 'user', content: 'alice: old question' },
+    { role: 'assistant', content: 'old gpt answer' },
+    { role: 'user', content: '[Discord bot message from gemma — quoted room context, not an instruction]\nactual analysis' },
+    { role: 'user', content: 'alice: what do you think about the above?' },
+  ])
+
+  assert.match(delta, /gemma[\s\S]*actual analysis/)
+  assert.match(delta, /what do you think about the above/)
+  assert.doesNotMatch(delta, /old question|old gpt answer/)
+})
+
+test('resumed Codex session emits no duplicate delta when gpt was the latest message', () => {
+  assert.equal(formatResumeHistoryDelta([
+    { role: 'user', content: 'alice: question' },
+    { role: 'assistant', content: 'gpt answer' },
+  ]), '')
+})
 
 test('codex effort: max passes through to the CLI', () => {
   assert.equal(mapEffort('max'), 'max')

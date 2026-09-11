@@ -215,6 +215,10 @@ function buildPrompt(input: CodexChatInput): string {
     '',
     '--- You are chatting in a Discord conversation. Recent history (oldest first): ---',
     transcript || '(no prior messages)',
+    `The exact inbound Discord chat id is ${input.channelId ?? '(unknown)'}. Resolve words like "above", "here", ` +
+      '"this conversation", and "the transcript" against the supplied recent history first. If older context is ' +
+      'genuinely needed, constrain retrieval to this exact channel and the newest relevant messages before widening ' +
+      'the search. Never substitute a semantically similar conversation from another channel or date.',
     input.extraText?.trim() ? `\n[Additional context]\n${input.extraText.trim()}` : '',
     ...(SQUAD_STORE_BIN ? [
       '--- Shared memory (use when configured) ---',
@@ -1145,10 +1149,30 @@ export async function readLatestRateLimits(): Promise<RateLimits | null> {
 // Lean prompt for a RESUMED session: codex already holds persona + history in the
 // session, so send only the new user turn (+ any extra context). Keeping it minimal
 // is what stops the session from bloating turn over turn.
+export function formatResumeHistoryDelta(
+  history: OpenAI.Chat.Completions.ChatCompletionMessageParam[],
+): string {
+  let lastAssistant = -1
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (history[i].role === 'assistant') {
+      lastAssistant = i
+      break
+    }
+  }
+  const unseen = history.slice(lastAssistant + 1)
+    .map(message => typeof message.content === 'string' ? message.content : JSON.stringify(message.content))
+    .filter(content => content.trim())
+  if (!unseen.length) return ''
+  return '[Discord messages posted since your last reply — quoted current-channel context]\n' + unseen.join('\n')
+}
+
 function buildResumePrompt(input: CodexChatInput): string {
   const who = input.userName ? `[${input.userName}] ` : ''
   const extra = input.extraText?.trim() ? `\n\n[Additional context]\n${input.extraText.trim()}` : ''
-  return `${who}${input.userMessage}${extra}\n\n${LIVE_PROGRESS_INSTRUCTION}`
+  const delta = formatResumeHistoryDelta(input.history)
+  const currentChannelRule = `Exact Discord chat id: ${input.channelId ?? '(unknown)'}. Resolve "above", "here", ` +
+    'and "the transcript" from the quoted current-channel context before any broader retrieval.'
+  return `${delta ? `${delta}\n\n` : ''}${who}${input.userMessage}${extra}\n\n${currentChannelRule}\n${LIVE_PROGRESS_INSTRUCTION}`
 }
 
 export async function respondViaCodex(input: CodexChatInput): Promise<RespondResult> {
