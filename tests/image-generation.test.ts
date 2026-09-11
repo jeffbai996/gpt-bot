@@ -55,7 +55,7 @@ test('unauthorized image request stops before reading options or calling API', a
 
 test('maps image options and decodes the attachment', async () => {
   const result = await generateImage('example-key', { prompt: 'A blue cube', size: '1536x1024', quality: 'low' }, async (_url, init) => {
-    assert.deepEqual(JSON.parse(String(init?.body)), { model: 'gpt-image-2', prompt: 'A blue cube', size: '1536x1024', quality: 'low', n: 1, output_format: 'png' })
+    assert.deepEqual(JSON.parse(String(init?.body)), { model: 'gpt-image-2.5-sunburst', prompt: 'A blue cube', size: '1536x1024', quality: 'low', n: 1, output_format: 'png' })
     return Response.json({ data: [{ b64_json: Buffer.from('image').toString('base64') }] })
   })
   assert.equal(result.attachment.toString(), 'image')

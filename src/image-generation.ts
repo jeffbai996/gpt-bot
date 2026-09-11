@@ -10,8 +10,8 @@ export interface ImageOptions {
 /** Direct Images API: no automatic retries of potentially billable generation. */
 export async function generateImage(apiKey: string, options: ImageOptions, request: typeof fetch = fetch) {
   if (!apiKey) throw new Error('OPENAI_API_KEY is not configured.')
-  const model = options.model ?? 'gpt-image-2'
-  if (!['gpt-image-2', 'gpt-image-1.5', 'gpt-image-1-mini'].includes(model)) throw new Error('Unsupported image model.')
+  const model = options.model ?? 'gpt-image-2.5-sunburst'
+  if (!['gpt-image-2.5-sunburst', 'gpt-image-2', 'gpt-image-1.5', 'gpt-image-1-mini'].includes(model)) throw new Error('Unsupported image model.')
   const size = options.size ?? '1024x1024'
   const quality = options.quality ?? 'medium'
   if (!['1024x1024', '1536x1024', '1024x1536', 'auto'].includes(size)) throw new Error('Unsupported image size.')
