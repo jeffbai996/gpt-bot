@@ -659,6 +659,10 @@ const restartCoordinator = new RestartCoordinator(
   },
   () => shutdownGate.beginDrain(),
   {
+    isIdle: () => shutdownGate.isIdle()
+      && activeTurns.isIdle()
+      && channelTurns.isIdle()
+      && globalTurns.isIdle(),
     onDeadline: () => {
       logTurnLifecycle({ event: 'restart_drain_deadline', restartPhase: 'draining' })
       console.error('[restart] drain exceeded its warning deadline; continuing to wait for active work')
