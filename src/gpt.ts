@@ -1,6 +1,6 @@
 import { PresenceOwner } from './presence-owner.ts'
 import { imageConversationInstruction, parseImageRequest, selectImageReference } from './image-conversation.ts'
-import { generateImage } from './image-generation.ts'
+import { generateImage, quotePrompt } from './image-generation.ts'
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, Client, GatewayIntentBits, Partials, ActivityType, REST, Routes, type Message, type TextChannel, type DMChannel, type ThreadChannel } from 'discord.js'
 import path from 'path'
 import os from 'os'
@@ -1853,7 +1853,11 @@ async function handleUserMessage(
       await fs.promises.writeFile(file, image.attachment, { mode: 0o600 })
       result.files = [...(result.files ?? []), file]
       result.temporaryFiles = [...(result.temporaryFiles ?? []), file]
-      result.reply = '🎨 Image attached.'
+      // Say what was drawn, not that something was. The conversational path
+      // resolves references ("make it blue") into a full prompt the asker
+      // never typed and would otherwise never see (Jeff 2026-09-10: the prompt
+      // belongs above the image).
+      result.reply = quotePrompt(imageRequest.prompt)
     }
 
     // Result is in hand — stop all "still working" indicators before rendering.

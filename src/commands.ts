@@ -8,7 +8,7 @@ import { globalSnapshot } from './cache-stats.ts'
 import { readLatestRateLimits, readSessionStats, type RateLimits, type RateWindow } from './codex-chat.ts'
 import { INTERRUPTED_MARKER } from './interruption-label.ts'
 import { DEFAULT_CODEX_MODEL, DEFAULT_OPENAI_MODEL } from './models.ts'
-import { generateImage } from './image-generation.ts'
+import { formatImageFooter, generateImage, quotePrompt } from './image-generation.ts'
 import {
   appendRuntimeChecks,
   type DoctorCheck,
@@ -396,12 +396,20 @@ export async function executeGptCommand(
       await interaction.deferReply()
       try {
         const model = interaction.options.getString('model') ?? 'gpt-image-2'
+        const prompt = interaction.options.getString('prompt', true)
         const image = await generateImage(process.env.OPENAI_API_KEY ?? '', {
-          prompt: interaction.options.getString('prompt', true), model,
+          prompt, model,
           size: interaction.options.getString('size') ?? undefined,
           quality: interaction.options.getString('quality') ?? undefined,
         })
-        return await interaction.editReply({ content: `🎨 ${model}`, files: [image], allowedMentions: { parse: [] } })
+        // The prompt sits above the picture. A slash command's options are
+        // visible only to whoever ran it, so without this nobody else in the
+        // channel can see what was asked for.
+        return await interaction.editReply({
+          content: `${quotePrompt(prompt)}\n\n${formatImageFooter(image)}`,
+          files: [{ attachment: image.attachment, name: image.name }],
+          allowedMentions: { parse: [] },
+        })
       } catch (error) {
         const message = error instanceof Error && /^(Image API|Generated image|OPENAI_API_KEY|Unsupported|Prompt must)/.test(error.message)
           ? error.message : 'Image generation or upload failed. Try again; a timed-out request may still be billed.'
