@@ -4,6 +4,7 @@ import {
   completionContinuationPrompt,
   isNonTerminalActionReply,
   MAX_COMPLETION_CONTINUATIONS,
+  mergeCompletionReplies,
 } from '../src/completion-gate.ts'
 
 test('completion gate rejects the todo-pass progress final from the incident', () => {
@@ -28,8 +29,24 @@ test('completion gate accepts completed work, answers, and concrete blockers', (
     'The service is active and the deployed SHA matches origin.',
     'The auditing pass is complete and the todo spec is saved.',
     'The two channels have separate context windows.',
+    'Honestly? I wouldn\'t count on it.',
+    'The outcome depends on it being available.',
+    'The phrase "on it" is too broad for substring matching.',
     'Blocked: the migration needs Jeff to choose which real database is authoritative.',
   ]) assert.equal(isNonTerminalActionReply(reply), false, reply)
+})
+
+test('completion gate only treats on-it acknowledgements as standalone status lines', () => {
+  assert.equal(isNonTerminalActionReply('On it.'), true)
+  assert.equal(isNonTerminalActionReply('Background context.\n\nOn it!'), true)
+})
+
+test('completion continuations preserve every non-empty reply in order', () => {
+  assert.equal(mergeCompletionReplies([
+    'A substantive first answer.',
+    '  ',
+    'A useful continuation with a correction.',
+  ]), 'A substantive first answer.\n\nA useful continuation with a correction.')
 })
 
 test('completion continuation preserves one bounded harness policy', () => {
