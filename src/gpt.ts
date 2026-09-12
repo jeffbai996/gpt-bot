@@ -1224,6 +1224,7 @@ async function handleUserMessage(
   // interval, never a queue of stale word-sized PATCH requests.
   let lastEditedText = ''
   const renderLiveNow = async (): Promise<void> => {
+    const previousWorkId = workMessage?.id
     if (liveUiClosed) return
     if (liveEditTask) await liveEditTask.catch(() => {})
     if (liveUiClosed) return
@@ -1263,6 +1264,17 @@ async function handleUserMessage(
     liveEditTask = task
     await task
     if (liveEditTask === task) liveEditTask = null
+    // Discord cannot reorder messages. Move the trace, then the active work
+    // card, only when narration created a new card (never on spinner ticks).
+    if (!liveUiClosed && workMessage && workMessage.id !== previousWorkId
+        && message.channel.isSendable()) {
+      const traceChannel = message.channel as TextChannel | DMChannel | ThreadChannel
+      await rehomeLiveTraceAtBottom(traceChannel, workMessage, true)
+      const anchor = liveTraceMsgs.at(-1)
+      if (anchor && workMessage && isNewerDiscordMessage(anchor.id, workMessage.id)) {
+        await rehomeLiveWorkBelowTrace(traceChannel)
+      }
+    }
   }
   const queueLiveRender = (): void => {
     if (liveUiClosed) return
@@ -1346,6 +1358,7 @@ async function handleUserMessage(
   let agentSpinnerFrame = 0
   let liveTraceMsgs: Message[] = []
   let liveTracePending = false
+  let liveTraceFlushTask: Promise<void> | null = null
   let liveTraceDirty = false
   let liveTraceClosed = false
   let liveWorkRehomeTask: Promise<void> | null = null
@@ -1380,11 +1393,12 @@ async function handleUserMessage(
       if (!previous || liveUiClosed) return
       const content = previous.content || lastEditedText || `💭 ✻ **${effortLabel}…**`
       const replacement = await traceChannel.send(content).catch(() => null)
-      if (!replacement || liveUiClosed) {
+      if (!replacement || liveUiClosed || workMessage !== previous) {
         if (replacement) await replacement.delete().catch(() => {})
         return
       }
       workMessage = replacement
+      if (narrationMessageId === previous.id) narrationMessageId = replacement.id
       pendingPlaceholders.untrack(previous.id)
       pendingPlaceholders.track(message.channel.id, replacement.id, message.id)
       placeholderId = replacement.id
@@ -1399,15 +1413,19 @@ async function handleUserMessage(
   const rehomeLiveTraceAtBottom = async (
     traceChannel: TextChannel | DMChannel | ThreadChannel,
     below: Message | null,
+    withNarration = false,
   ): Promise<void> => {
-    if (flags.trace !== 'live' || liveTraceClosed || !below || !liveTraceMsgs.length) return
+    if ((flags.trace !== 'live' && !withNarration) || flags.trace === 'off' || liveTraceClosed || !below || !liveTraceMsgs.length) return
     if (liveTraceRehomeTask) {
       await liveTraceRehomeTask
-      return rehomeLiveTraceAtBottom(traceChannel, below)
+      return rehomeLiveTraceAtBottom(traceChannel, below, withNarration)
     }
     const anchor = liveTraceMsgs.at(-1)
     if (!anchor || !isNewerDiscordMessage(below.id, anchor.id)) return
     const task = (async () => {
+      // Finish any edit against the old messages before replacing their IDs.
+      if (liveTraceFlushTask) await liveTraceFlushTask
+      if (liveTraceClosed) return
       const previousTraceMessages = [...liveTraceMsgs]
       const replacements: Message[] = []
       for (const current of previousTraceMessages) {
@@ -1429,8 +1447,13 @@ async function handleUserMessage(
     liveTraceRehomeTask = task
     await task
     if (liveTraceRehomeTask === task) liveTraceRehomeTask = null
+    if (liveTraceDirty) {
+      liveTraceDirty = false
+      flushLiveTrace()
+    }
   }
   const flushLiveTrace = () => {
+    if (liveTraceRehomeTask) { liveTraceDirty = true; return }
     if (liveTraceClosed || liveTracePending
         || (!liveToolRows.length && !liveAgents.length)
         || !message.channel.isSendable()) return
@@ -1442,7 +1465,7 @@ async function handleUserMessage(
       Date.now(),
       agentSpinnerFrame,
     )
-    ;(async () => {
+    liveTraceFlushTask = (async () => {
       if (liveTraceClosed) return
       let appendedTraceCard = false
       for (let i = 0; i < cards.length; i++) {
@@ -1467,6 +1490,7 @@ async function handleUserMessage(
     })().catch(() => {
       // Trace display is diagnostic only; never fail the user turn over Discord.
     }).finally(() => {
+      liveTraceFlushTask = null
       liveTracePending = false
       if (liveTraceDirty) {
         liveTraceDirty = false

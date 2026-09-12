@@ -178,3 +178,14 @@ test('silent and file-only completions also arm transient trace cleanup', async 
   assert.match(silentBranch, /scheduleTransientTraceCleanup\(liveTraceMsgs\)/)
   assert.match(fileOnlyBranch, /scheduleTransientTraceCleanup\(liveTraceMsgs\)/)
 })
+
+test('new narration moves the trace and work card together after the render settles', async () => {
+  const source = await readFile(new URL('../src/gpt.ts', import.meta.url), 'utf8')
+  const render = source.slice(source.indexOf('const renderLiveNow'), source.indexOf('const queueLiveRender'))
+  assert.match(render, /previousWorkId/)
+  assert.match(render, /await rehomeLiveTraceAtBottom\(traceChannel, workMessage, true\)/)
+  assert.match(render, /await rehomeLiveWorkBelowTrace\(traceChannel\)/)
+  assert.ok(render.indexOf('liveEditTask = null') < render.indexOf('await rehomeLiveTraceAtBottom'))
+  const rehome = source.slice(source.indexOf('const rehomeLiveWorkBelowTrace'), source.indexOf('const rehomeLiveTraceAtBottom'))
+  assert.match(rehome, /if \(narrationMessageId === previous.id\) narrationMessageId = replacement.id/)
+})
