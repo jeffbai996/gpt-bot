@@ -161,5 +161,5 @@ export function quotePrompt(prompt: string): string {
   const shown = clean.length > QUOTED_PROMPT_MAX
     ? clean.slice(0, QUOTED_PROMPT_MAX - 1) + '…'
     : clean
-  return shown.split('\n').map(line => `> ${line}`).join('\n')
+  return '**Prompt**\n' + shown.split('\n').map(line => `> ${line}`).join('\n')
 }

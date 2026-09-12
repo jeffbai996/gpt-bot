@@ -1,3 +1,4 @@
+import { NarrationHistory, narrationBlocks } from './narration-history.ts'
 import { PresenceOwner } from './presence-owner.ts'
 import { imageConversationInstruction, parseImageRequest, selectImageReference } from './image-conversation.ts'
 import { generateImage, quotePrompt } from './image-generation.ts'
@@ -103,7 +104,6 @@ import {
   resolveTraceFailsafeMs,
 } from './tool-trace.ts'
 import {
-  appendNarrationTrace,
   formatHeartbeatFooter,
   formatLiveWorkMessage,
   formatReasoningSnapshot,
@@ -1055,7 +1055,8 @@ async function handleUserMessage(
   let lastProgressText = ''
   let liveHeadline = ''
   const liveReasoningTrace: string[] = []
-  let liveNarrationTrace: string[] = []
+  const narrationHistory = new NarrationHistory()
+  let narrationMessageId: string | null = null
   let liveDetail = ''
   let liveFooter = ''
   let liveCompacting = false
@@ -1097,6 +1098,7 @@ async function handleUserMessage(
     }
     liveUiClosed = true
     await stopThinkingAnim()
+    await narrationHistory.finish(retireNarration).catch(e => console.error('[narration] final demotion failed:', e))
   }
   let interruptionRendered = false
   const renderInterruptedTurn = async () => {
@@ -1196,6 +1198,26 @@ async function handleUserMessage(
     placeholderTimer = setTimeout(() => { void postPlaceholder() }, PLACEHOLDER_DELAY_MS)
   }
 
+  // Retire in place before giving the spinner a new message. Retired messages
+  // leave the crash-cleanup registry and are never scheduled for deletion.
+  const retireNarration = async (text: string): Promise<void> => {
+    if (!message.channel.isSendable()) return
+    const blocks = narrationBlocks(text)
+    const prior = workMessage && workMessage.id === narrationMessageId && !targetMessage
+      ? workMessage : null
+    if (prior) {
+      await prior.edit({ content: blocks[0], allowedMentions: { parse: [] } })
+      pendingPlaceholders.untrack(prior.id)
+      workMessage = null
+      placeholderId = null
+      narrationMessageId = null
+      lastEditedText = ''
+    }
+    for (const content of blocks.slice(prior ? 1 : 0)) {
+      await message.channel.send({ content, allowedMentions: { parse: [] } })
+    }
+  }
+
   // Serialize and coalesce all live-card changes. Model streams can emit a
   // lifecycle event per token; Discord should see one accumulated snapshot per
   // interval, never a queue of stale word-sized PATCH requests.
@@ -1206,6 +1228,7 @@ async function handleUserMessage(
     if (liveUiClosed) return
     const task = (async () => {
       if (liveUiClosed) return
+      await narrationHistory.advance(retireNarration)
       await postPlaceholder()
       if (!workMessage || liveUiClosed) return
       const accumulatesReasoning = flags.thinking === 'on' || flags.thinking === 'collapse'
@@ -1214,8 +1237,7 @@ async function handleUserMessage(
         activity: liveCompacting ? 'compacting' : 'thinking',
         headline: accumulatesReasoning ? '' : liveHeadline,
         reasoningTrace: accumulatesReasoning ? liveReasoningTrace : [],
-        detail: liveDetail,
-        narrationTrace: flags.thinking === 'collapse' ? liveNarrationTrace : [],
+        detail: narrationHistory.current || liveDetail,
         footer: liveFooter,
         spinnerGlyph,
         spinnerDots,
@@ -1232,6 +1254,7 @@ async function handleUserMessage(
       lastRenderedProgressText = dwell.lastText
       liveProgressHoldUntil = dwell.holdUntil
       const target = workMessage
+      if (narrationHistory.current) narrationMessageId = target.id
       if (!await awaitBounded(target.edit(display)) && workMessage === target) {
         abandonWedgedPlaceholder()
       }
@@ -1564,10 +1587,7 @@ async function handleUserMessage(
       return
     }
     if (event.type === 'progress') {
-      if (flags.thinking === 'collapse') {
-        liveNarrationTrace = appendNarrationTrace(liveNarrationTrace, event.reply)
-      }
-      queueLiveText(event.reply, true)
+      if (narrationHistory.accept(event.reply)) queueLiveText(event.reply, true)
       return
     }
     if (event.type === 'reasoning_progress') {
@@ -1853,7 +1873,14 @@ async function handleUserMessage(
     const imageRequest = codexFailureLifecycle ? null : parseImageRequest(result.reply)
     if (imageRequest) {
       throwIfStopped()
-      if (workMessage) await workMessage.edit('🎨 **Generating image…**').catch(() => {})
+      await settleLiveUi()
+      if (workMessage) {
+        await workMessage.edit('🎨 **Generating image…**')
+      } else if (message.channel.isSendable()) {
+        workMessage = await message.channel.send('🎨 **Generating image…**')
+        placeholderId = workMessage.id
+        pendingPlaceholders.track(channelId, workMessage.id, message.id)
+      }
       const references = imageRequest.useReference ? imageParts.flatMap(part => {
         const url = part.type === 'image_url' ? part.image_url.url : ''
         const match = /^data:(image\/(?:png|jpeg|webp));base64,(.+)$/.exec(url)

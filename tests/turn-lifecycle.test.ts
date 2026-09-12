@@ -95,7 +95,7 @@ test('rolling live trace is reposted beneath newer bot output without duplicates
   assert.match(finalRender, /await rehomeLiveTraceAtBottom\(/)
 })
 
-test('collapse narration accumulates and survives reasoning redraws until turn end', async () => {
+test('narration is retained in all modes and survives reasoning redraws', async () => {
   const source = await readFile(new URL('../src/gpt.ts', import.meta.url), 'utf8')
   const progressStart = source.indexOf("if (event.type === 'progress')")
   const progressEnd = source.indexOf("if (event.type === 'reasoning_progress')", progressStart)
@@ -104,9 +104,9 @@ test('collapse narration accumulates and survives reasoning redraws until turn e
   const reasoningEnd = source.indexOf("if (event.type === 'heartbeat')", reasoningStart)
   const reasoningBranch = source.slice(reasoningStart, reasoningEnd)
 
-  assert.match(progressBranch, /flags\.thinking === 'collapse'/)
-  assert.match(progressBranch, /appendNarrationTrace\(liveNarrationTrace, event\.reply\)/)
-  assert.doesNotMatch(reasoningBranch, /liveNarrationTrace\s*=/)
+  assert.match(progressBranch, /narrationHistory\.accept\(event\.reply\)/)
+  assert.doesNotMatch(reasoningBranch, /narrationHistory\./)
+  assert.match(source, /await narrationHistory\.finish\(retireNarration\)/)
 })
 
 test('heartbeat never invents a generic tool-status narration line', async () => {

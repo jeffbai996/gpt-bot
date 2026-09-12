@@ -138,7 +138,7 @@ test('a quoted prompt stays inside Discord message limits', () => {
   // /gpt image takes 4000 characters; a Discord message holds 2000. An
   // over-long quote means the reply never sends and a billed image is lost.
   const quoted = quotePrompt('x'.repeat(4_000))
-  assert.ok(quoted.length < 1_600, quoted.length)
+  assert.ok(quoted.length < 1_600, String(quoted.length))
   assert.ok(quoted.endsWith('…'))
-  assert.equal(quotePrompt('one\ntwo'), '> one\n> two')
+  assert.equal(quotePrompt('one\ntwo'), '**Prompt**\n> one\n> two')
 })
