@@ -183,17 +183,21 @@ test('/gpt stats describes persisted cumulative usage', () => {
   assert.equal(stats?.description, 'Show cumulative token usage')
 })
 
-test('/gpt model choices use durable tier labels', () => {
+// Bare ids, not tier blurbs (Jeff 2026-09-04): the descriptions padded every
+// row and the friendly name hid what you were actually selecting. The two
+// lines of this repo disagreed on that for three months -- the blurb version
+// only survived on the branch this test came from.
+test('/gpt model choices are bare model ids', () => {
   const json = gptCommand.toJSON()
   const model: any = json.options?.find((option: any) => option.name === 'model')
   const value: any = model?.options?.find((option: any) => option.name === 'value')
 
   assert.deepEqual(value?.choices?.map((choice: any) => choice.name), [
-    'GPT-6 Astra - most capable',
-    'gpt-5.6-sol - frontier coding',
-    'gpt-5.6-terra - balanced',
-    'gpt-5.6-luna - high-throughput',
-    'Daybreak Blue - defensive cyber',
+    'gpt-6-astra',
+    'gpt-5.6-sol',
+    'gpt-5.6-terra',
+    'gpt-5.6-luna',
+    'gpt-daybreak-blue-latest',
   ])
 })
 
