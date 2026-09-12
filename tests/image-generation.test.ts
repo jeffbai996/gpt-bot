@@ -142,3 +142,10 @@ test('a quoted prompt stays inside Discord message limits', () => {
   assert.ok(quoted.endsWith('…'))
   assert.equal(quotePrompt('one\ntwo'), '**Prompt**\n> one\n> two')
 })
+
+test('conversational images attach the same token and cost footer as slash images', async () => {
+  const { readFile } = await import('node:fs/promises')
+  const source = await readFile(new URL('../src/gpt.ts', import.meta.url), 'utf8')
+  assert.match(source, /generatedImageFooter = formatImageFooter\(image\)/)
+  assert.match(source, /content: generatedImageFooter \|\| undefined,\s+files: result\.files\.slice\(0, 10\)/)
+})

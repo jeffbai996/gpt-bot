@@ -122,13 +122,13 @@ export function selectPriorImages(
     }))
 }
 
-function describeAttachment(att: HistoryAttachment): string {
+function describeAttachment(att: HistoryAttachment, messageId: string): string {
   const mime = att.mimeType ?? ''
   const kind = mime.startsWith('image/') ? 'image'
     : mime.startsWith('video/') ? 'video'
     : mime.startsWith('audio/') ? 'audio'
     : 'file'
-  return `[previous ${kind}: ${att.name}]`
+  return `[previous ${kind}: ${att.name}; message_id: ${messageId}]`
 }
 
 // Strip metadata lines the bot adds to its own replies (verbose footer, etc.)
@@ -192,7 +192,7 @@ export async function formatHistoryForOpenAI(
     // can see the answer the user is referring to.
     if (!isSelf && !isSiblingBot && isExplicitlyAddressedToAnotherUser(selfId, m.content)) continue
     const attachmentNote = m.attachments.length
-      ? '\n' + m.attachments.map(describeAttachment).join('\n')
+      ? '\n' + m.attachments.map(att => describeAttachment(att, m.id)).join('\n')
       : ''
     const content = isSelf
       ? stripBotMetadata(m.content) + attachmentNote

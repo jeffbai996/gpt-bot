@@ -97,3 +97,18 @@ test('completion racing a slow edit does not demote the same update twice', asyn
   await Promise.all([render, finish])
   assert.deepEqual(saved, ['first', 'second'])
 })
+
+test('authoritative final answer is not retained from pending or displayed progress', async () => {
+  for (const rendered of [false, true]) {
+    const history = new NarrationHistory()
+    const saved: string[] = []
+    const retire = async (text: string) => { saved.push(text) }
+    history.accept('Checking the result')
+    await history.advance(retire)
+    history.accept('The final answer')
+    if (rendered) await history.advance(retire)
+    await history.finish(retire, '  The final answer  ')
+    await history.finish(retire)
+    assert.deepEqual(saved, ['Checking the result'])
+  }
+})

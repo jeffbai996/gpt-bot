@@ -432,3 +432,7 @@ test('codexTimeoutMs: bare status pokes cannot receive a shorter hard cap', () =
     assert.equal(codexTimeoutMs({ userMessage: m, extraText: '' }), 7_200_000, `bare poke: ${m}`)
   }
 })
+
+test('explicit final answer items never become commentary', () => {
+  assert.equal(commentaryProgress({type:'item.completed', item:{type:'agent_message',phase:'final_answer',text:'done'}}), null)
+})

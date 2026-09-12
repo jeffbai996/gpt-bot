@@ -223,7 +223,7 @@ test('formatHistoryForOpenAI: describes attachments as breadcrumbs', async () =>
     createdTimestamp: 0,
   }]
   const out = await formatHistoryForOpenAI(msgs, SELF)
-  assert.match(String(out[0].content), /\[previous image: pic\.png\]/)
+  assert.match(String(out[0].content), /\[previous image: pic\.png; message_id: 1\]/)
 })
 
 test('selectPriorImages: rehydrates a recent image when the text references it', () => {

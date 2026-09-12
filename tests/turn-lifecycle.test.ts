@@ -106,7 +106,7 @@ test('narration is retained in all modes and survives reasoning redraws', async 
 
   assert.match(progressBranch, /narrationHistory\.accept\(event\.reply\)/)
   assert.doesNotMatch(reasoningBranch, /narrationHistory\./)
-  assert.match(source, /await narrationHistory\.finish\(retireNarration\)/)
+  assert.match(source, /await narrationHistory\.finish\(retireNarration, finalReply\)/)
 })
 
 test('heartbeat never invents a generic tool-status narration line', async () => {

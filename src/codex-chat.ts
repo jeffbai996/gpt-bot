@@ -620,6 +620,7 @@ export function commentaryProgress(ev: any): string | null {
   // same item.completed agent_message shape. Surface each one live; `-o` remains
   // authoritative for the final answer and replaces this placeholder afterward.
   if (ev?.type === 'item.completed' && ev.item?.type === 'agent_message') {
+    if (ev.item.phase && ev.item.phase !== 'commentary') return null
     const message = typeof ev.item.text === 'string' ? ev.item.text.trim() : ''
     return message || null
   }

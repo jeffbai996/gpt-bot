@@ -38,8 +38,15 @@ export class NarrationHistory {
     }
   }
 
-  finish(retire: (text: string) => Promise<void>): Promise<void> {
+  finish(retire: (text: string) => Promise<void>, finalReply = ''): Promise<void> {
     return this.serialize(async () => {
+      // Unphased CLI agent messages include the final answer. Leave its live
+      // placeholder available for the final renderer instead of archiving it.
+      const finalText = finalReply.trim()
+      if (finalText) {
+        this.pending = this.pending.filter(text => text !== finalText)
+        if (this.current === finalText) this.current = ''
+      }
       await this.drain(retire)
       if (this.current) {
         await retire(this.current)

@@ -1,7 +1,7 @@
 import { NarrationHistory, narrationBlocks } from './narration-history.ts'
 import { PresenceOwner } from './presence-owner.ts'
 import { imageConversationInstruction, parseImageRequest, selectImageReference } from './image-conversation.ts'
-import { generateImage, quotePrompt } from './image-generation.ts'
+import { formatImageFooter, generateImage, quotePrompt } from './image-generation.ts'
 import { codeBlock, ActionRowBuilder, ButtonBuilder, ButtonStyle, Client, GatewayIntentBits, Partials, ActivityType, REST, Routes, type Message, type TextChannel, type DMChannel, type ThreadChannel } from 'discord.js'
 import path from 'path'
 import os from 'os'
@@ -1004,6 +1004,7 @@ async function handleUserMessage(
   let imageParts: NonNullable<Parameters<typeof openai.respond>[0]['imageParts']> = []
   let imagePaths: string[] = []
   let temporaryResultFiles: string[] = []
+  let generatedImageFooter = ''
   let extraText = ''
   if (attachments.length > 0) {
     await lifecycle.transition('ingesting')
@@ -1091,14 +1092,14 @@ async function handleUserMessage(
     liveEditTask = null
     if (!await awaitBounded(pending)) abandonWedgedPlaceholder()
   }
-  const settleLiveUi = async (respectProgressDwell = false) => {
+  const settleLiveUi = async (respectProgressDwell = false, finalReply = '') => {
     if (respectProgressDwell) {
       const remaining = liveProgressHoldUntil - Date.now()
       if (remaining > 0) await sleep(remaining)
     }
     liveUiClosed = true
     await stopThinkingAnim()
-    await narrationHistory.finish(retireNarration).catch(e => console.error('[narration] final demotion failed:', e))
+    await narrationHistory.finish(retireNarration, finalReply).catch(e => console.error('[narration] final demotion failed:', e))
   }
   let interruptionRendered = false
   const renderInterruptedTurn = async () => {
@@ -1881,13 +1882,24 @@ async function handleUserMessage(
         placeholderId = workMessage.id
         pendingPlaceholders.track(channelId, workMessage.id, message.id)
       }
-      const references = imageRequest.useReference ? imageParts.flatMap(part => {
+      let referenceParts = imageParts
+      if (imageRequest.referenceMessageId) {
+        const source = rawHistory.find(prior => prior.id === imageRequest.referenceMessageId
+          && [userId, selfId].includes(prior.authorId))
+        const selected = source?.attachments.filter(att => /^image\/(png|jpeg|webp)$/.test(att.mimeType ?? '')) ?? []
+        if (!selected.length) throw new Error('The selected earlier image is unavailable in this channel history.')
+        const processed = await processAttachments(selected.map(att => ({ ...att, contentType: att.mimeType })), openaiRaw)
+        referenceParts = processed.imageParts
+        imagePaths.push(...processed.imagePaths)
+      }
+      const references = imageRequest.useReference ? referenceParts.flatMap(part => {
         const url = part.type === 'image_url' ? part.image_url.url : ''
         const match = /^data:(image\/(?:png|jpeg|webp));base64,(.+)$/.exec(url)
         return match ? [{ data: Buffer.from(match[2], 'base64'), mimeType: match[1] }] : []
       }) : []
       if (imageRequest.useReference && !references.length) throw new Error('Reference image unavailable. Reply to the image or attach it again.')
       const image = await generateImage(OPENAI_KEY, { prompt: imageRequest.prompt, images: references, signal: stopController.signal })
+      generatedImageFooter = formatImageFooter(image)
       throwIfStopped()
       const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'gpt-conversation-image-'))
       const file = path.join(dir, image.name)
@@ -1906,7 +1918,7 @@ async function handleUserMessage(
     // transient bubble) and the typing heartbeat, alongside the spinner.
     if (placeholderTimer) { clearTimeout(placeholderTimer); placeholderTimer = null }
     if (typingInterval) { clearInterval(typingInterval); typingInterval = null }
-    await settleLiveUi(true)
+    await settleLiveUi(true, result.reply ?? '')
     if (stopController.signal.aborted) throw new CodexStoppedError(result.durationMs)
     temporaryResultFiles = result.temporaryFiles ?? []
     // Record completed usage for the cumulative stats ledger and live handoff.
@@ -2143,7 +2155,10 @@ async function handleUserMessage(
     // and so the visual lands right under the text. Discord caps 10 files/msg.
     if (result.files?.length && message.channel.isSendable()) {
       try {
-        bottomContentMessage = await message.channel.send({ files: result.files.slice(0, 10) })
+        bottomContentMessage = await message.channel.send({
+          content: generatedImageFooter || undefined,
+          files: result.files.slice(0, 10),
+        })
       } catch (e) {
         console.error('screenshot attach failed:', e instanceof Error ? e.message : e)
       }
