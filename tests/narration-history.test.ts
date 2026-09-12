@@ -30,12 +30,14 @@ test('filters image request envelopes and duplicate progress', async () => {
   assert.deepEqual(saved, ['hello'])
 })
 
-test('long narration retains text in bounded safe code blocks', () => {
-  const blocks = narrationBlocks('hello ``` embedded\n' + 'x'.repeat(5000))
+test('narration preserves its original text formatting without added fences', () => {
+  const text = '**Checking** the render.\n\nKeeping `inline code` and ordinary prose.'
+  assert.deepEqual(narrationBlocks(text), [text])
+  const long = 'Some narration. '.repeat(400)
+  const blocks = narrationBlocks(long)
   assert.ok(blocks.length > 1)
   assert.ok(blocks.every(block => block.length <= 1900))
-  assert.ok(blocks.every(block => (block.match(/```/g) ?? []).length === 2))
-  assert.equal(blocks.join('').split('x').length - 1, 5000)
+  assert.equal(blocks.join(''), long)
 })
 
 test('failed demotion remains retryable', async () => {
@@ -73,11 +75,11 @@ test('production demotion edits the original message and removes it from crash c
   await history.advance(owner.retireNarration)
   history.accept('second')
   await history.advance(owner.retireNarration)
-  assert.equal(contents.get('original'), '```\nfirst\n```')
+  assert.equal(contents.get('original'), 'first')
   assert.equal(owner.current(), null)
   assert.equal(tracked.size, 0)
   await history.finish(owner.retireNarration)
-  assert.deepEqual([...contents.values()], ['```\nfirst\n```', '```\nsecond\n```'])
+  assert.deepEqual([...contents.values()], ['first', 'second'])
 })
 
 test('completion racing a slow edit does not demote the same update twice', async () => {

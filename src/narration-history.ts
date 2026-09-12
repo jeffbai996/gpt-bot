@@ -1,12 +1,8 @@
+import { chunk } from './chunk.ts'
 import { redactTraceSensitiveData } from './tool-trace.ts'
 
 export function narrationBlocks(text: string): string[] {
-  const safe = redactTraceSensitiveData(text).replace(/`{3,}/g, run => [...run].join('\u200b'))
-  const blocks: string[] = []
-  for (let offset = 0; offset < safe.length; offset += 1892) {
-    blocks.push('```\n' + safe.slice(offset, offset + 1892) + '\n```')
-  }
-  return blocks
+  return chunk(redactTraceSensitiveData(text), 1900)
 }
 
 /** The render owner serializes advance/finish with Discord edits. */
