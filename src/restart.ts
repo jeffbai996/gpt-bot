@@ -58,6 +58,8 @@ interface RestartCoordinatorOptions {
   deadlineMs?: number
   /** Called when the drain overruns, so the overrun lands in the turn log. */
   onDeadline?: () => void
+  /** Re-check all liveness sources atomically after their waiters settle. */
+  isIdle?: () => boolean
 }
 
 /**
@@ -113,6 +115,10 @@ export class ShutdownGate {
   isDraining(): boolean {
     return this.draining
   }
+
+  isIdle(): boolean {
+    return this.active === 0
+  }
 }
 
 /**
@@ -126,6 +132,7 @@ export class RestartCoordinator {
   private launched = false
   private readonly deadlineMs: number
   private readonly onDeadline: () => void
+  private readonly isIdleNow: () => boolean
 
   constructor(
     private readonly waitForIdle: WaitForIdle,
@@ -135,6 +142,7 @@ export class RestartCoordinator {
   ) {
     this.deadlineMs = opts.deadlineMs ?? RESTART_DRAIN_DEADLINE_MS
     this.onDeadline = opts.onDeadline ?? (() => {})
+    this.isIdleNow = opts.isIdle ?? (() => true)
   }
 
   request(): boolean {
@@ -150,17 +158,28 @@ export class RestartCoordinator {
     }, this.deadlineMs)
     timer.unref?.()
 
-    void this.waitForIdle()
-      .then(() => {
-        clearTimeout(timer)
-        this.fire()
-      })
+    void this.waitUntilIdle(timer)
       .catch(err => {
         clearTimeout(timer)
         this.pending = false
         console.error('[restart] failed while waiting for idle:', err)
       })
     return true
+  }
+
+  private async waitUntilIdle(timer: ReturnType<typeof setTimeout>): Promise<void> {
+    while (!this.launched) {
+      await this.waitForIdle()
+      // Promise.all remembers each source becoming idle independently. A new
+      // turn may start between those events, so only a synchronous snapshot
+      // can authorize the cutover.
+      if (this.isIdleNow()) {
+        clearTimeout(timer)
+        this.fire()
+        return
+      }
+      await new Promise<void>(resolve => setImmediate(resolve))
+    }
   }
 
   private fire(): void {

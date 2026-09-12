@@ -95,7 +95,7 @@ test('rolling live trace is reposted beneath newer bot output without duplicates
   assert.match(finalRender, /await rehomeLiveTraceAtBottom\(/)
 })
 
-test('collapse narration accumulates and survives reasoning redraws until turn end', async () => {
+test('narration is retained in all modes and survives reasoning redraws', async () => {
   const source = await readFile(new URL('../src/gpt.ts', import.meta.url), 'utf8')
   const progressStart = source.indexOf("if (event.type === 'progress')")
   const progressEnd = source.indexOf("if (event.type === 'reasoning_progress')", progressStart)
@@ -104,9 +104,9 @@ test('collapse narration accumulates and survives reasoning redraws until turn e
   const reasoningEnd = source.indexOf("if (event.type === 'heartbeat')", reasoningStart)
   const reasoningBranch = source.slice(reasoningStart, reasoningEnd)
 
-  assert.match(progressBranch, /flags\.thinking === 'collapse'/)
-  assert.match(progressBranch, /appendNarrationTrace\(liveNarrationTrace, event\.reply\)/)
-  assert.doesNotMatch(reasoningBranch, /liveNarrationTrace\s*=/)
+  assert.match(progressBranch, /narrationHistory\.accept\(event\.reply\)/)
+  assert.doesNotMatch(reasoningBranch, /narrationHistory\./)
+  assert.match(source, /await narrationHistory\.finish\(retireNarration, finalReply\)/)
 })
 
 test('heartbeat never invents a generic tool-status narration line', async () => {
@@ -177,4 +177,15 @@ test('silent and file-only completions also arm transient trace cleanup', async 
   assert.ok(fileOnlyStart > silentStart)
   assert.match(silentBranch, /scheduleTransientTraceCleanup\(liveTraceMsgs\)/)
   assert.match(fileOnlyBranch, /scheduleTransientTraceCleanup\(liveTraceMsgs\)/)
+})
+
+test('new narration moves the trace and work card together after the render settles', async () => {
+  const source = await readFile(new URL('../src/gpt.ts', import.meta.url), 'utf8')
+  const render = source.slice(source.indexOf('const renderLiveNow'), source.indexOf('const queueLiveRender'))
+  assert.match(render, /previousWorkId/)
+  assert.match(render, /await rehomeLiveTraceAtBottom\(traceChannel, workMessage, true\)/)
+  assert.match(render, /await rehomeLiveWorkBelowTrace\(traceChannel\)/)
+  assert.ok(render.indexOf('liveEditTask = null') < render.indexOf('await rehomeLiveTraceAtBottom'))
+  const rehome = source.slice(source.indexOf('const rehomeLiveWorkBelowTrace'), source.indexOf('const rehomeLiveTraceAtBottom'))
+  assert.match(rehome, /if \(narrationMessageId === previous.id\) narrationMessageId = replacement.id/)
 })

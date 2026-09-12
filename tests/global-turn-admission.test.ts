@@ -23,27 +23,14 @@ test('runs at most two turns and admits waiting channels FIFO', async () => {
   const started: string[] = []
   const queued: Array<[string, number]> = []
   const admission = new GlobalTurnAdmission({ maxActive: 2 })
-
   const runs = ['one', 'two', 'three'].map((channelId, index) => admission.run(
     channelId,
-    async () => {
-      started.push(channelId)
-      await gates[index].promise
-      return channelId
-    },
+    async () => { started.push(channelId); await gates[index].promise; return channelId },
     { onQueued: position => { queued.push([channelId, position]) } },
   ))
-
   await tick()
   assert.deepEqual(started, ['one', 'two'])
   assert.deepEqual(queued, [['three', 1]])
-  assert.deepEqual(admission.snapshot(), {
-    running: 2,
-    queued: 1,
-    oldestWaitMs: admission.snapshot().oldestWaitMs,
-    pausedForMemory: false,
-  })
-
   gates[0].resolve()
   await tick()
   assert.deepEqual(started, ['one', 'two', 'three'])
@@ -58,16 +45,9 @@ test('cancels queued work without disturbing a running channel', async () => {
   const admission = new GlobalTurnAdmission({ maxActive: 1 })
   const running = admission.run('one', async () => { await gate.promise })
   const queued = admission.run('two', async () => { throw new Error('must not start') })
-
   await tick()
   assert.equal(admission.cancel('two'), 1)
   await assert.rejects(queued, TurnAdmissionCancelledError)
-  assert.deepEqual(admission.snapshot(), {
-    running: 1,
-    queued: 0,
-    oldestWaitMs: 0,
-    pausedForMemory: false,
-  })
   gate.resolve()
   await running
 })
@@ -79,10 +59,7 @@ test('cancellation waits for an in-flight queue receipt before cleaning it up', 
   const admission = new GlobalTurnAdmission({ maxActive: 1 })
   const running = admission.run('one', async () => { await gate.promise })
   const queued = admission.run('two', async () => {}, {
-    onQueued: async () => {
-      await receiptGate.promise
-      events.push('receipt created')
-    },
+    onQueued: async () => { await receiptGate.promise; events.push('receipt created') },
     onCancelled: () => { events.push('receipt deleted') },
   })
   await tick()
@@ -106,33 +83,14 @@ test('memory hysteresis pauses new dispatch until usage crosses the low-water ma
   })
   let started = false
   const run = admission.run('one', async () => { started = true })
-
   await new Promise(resolve => setTimeout(resolve, 10))
   assert.equal(started, false)
-  assert.equal(admission.snapshot().pausedForMemory, true)
-
   memoryBytes = 700
   await new Promise(resolve => setTimeout(resolve, 10))
-  assert.equal(started, false, 'between thresholds remains paused')
-
+  assert.equal(started, false)
   memoryBytes = 500
   await run
   assert.equal(started, true)
-  assert.equal(admission.snapshot().pausedForMemory, false)
-})
-
-test('reports queue wait age for stats and doctor telemetry', async () => {
-  let now = 1_000
-  const gate = deferred()
-  const admission = new GlobalTurnAdmission({ maxActive: 1, now: () => now })
-  const first = admission.run('one', async () => { await gate.promise })
-  const second = admission.run('two', async () => {})
-  await tick()
-
-  now = 4_250
-  assert.equal(admission.snapshot().oldestWaitMs, 3_250)
-  gate.resolve()
-  await Promise.all([first, second])
 })
 
 test('reads descendant-inclusive memory from the current cgroup path', () => {

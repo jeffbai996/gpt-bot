@@ -7,10 +7,14 @@ export interface ParsedResponse {
   reply: string          // text to post (may be empty if react-only)
 }
 
-export function maxToolLoops(raw = process.env.GPT_MAX_TOOL_LOOPS): number {
-  if (raw === undefined || raw.trim() === '') return 256
+export function maxToolLoops(raw?: string): number {
+  const defaultLoops = 16
+  const hardMaxLoops = 32
+  if (raw === undefined || raw.trim() === '') return defaultLoops
   const parsed = Number(raw)
-  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 256
+  return Number.isSafeInteger(parsed) && parsed > 0
+    ? Math.min(parsed, hardMaxLoops)
+    : defaultLoops
 }
 
 // A single dispatched tool call, captured for the post-hoc trace card.
@@ -304,10 +308,9 @@ export class OpenAIClient {
     // runs onto the end of the prior line ("…web search!**Discussing details**").
     let lastSummaryIndex = -1
     const toolCalls: ToolCall[] = []
-    // Tool-loop cap. Repo work regularly needs more than eight round-trips
-    // once inspection, edits, tests, and deployment are all involved. Keep a
-    // finite fuse, but leave enough room for a normal implementation turn.
-    const MAX_LOOPS = maxToolLoops()
+    // API turns are an explicitly bounded fallback path. Long repository work
+    // belongs on the supervised Codex engine, not an open-ended API tool loop.
+    const MAX_LOOPS = maxToolLoops(process.env.GPT_MAX_TOOL_LOOPS)
 
     try {
       for (let iter = 0; iter < MAX_LOOPS; iter++) {
@@ -447,11 +450,11 @@ export class OpenAIClient {
                 }
                 totalUsage = totalUsage
                   ? {
-                      inputTokens: (totalUsage.inputTokens + mapped.inputTokens),
-                      outputTokens: (totalUsage.outputTokens + mapped.outputTokens),
-                      totalTokens: (totalUsage.totalTokens + mapped.totalTokens),
-                      cachedInputTokens: (totalUsage.cachedInputTokens + mapped.cachedInputTokens),
-                      reasoningTokens: (totalUsage.reasoningTokens + mapped.reasoningTokens),
+                      inputTokens: totalUsage.inputTokens + mapped.inputTokens,
+                      outputTokens: totalUsage.outputTokens + mapped.outputTokens,
+                      totalTokens: totalUsage.totalTokens + mapped.totalTokens,
+                      cachedInputTokens: totalUsage.cachedInputTokens + mapped.cachedInputTokens,
+                      reasoningTokens: totalUsage.reasoningTokens + mapped.reasoningTokens,
                     }
                   : mapped
               }
@@ -477,11 +480,11 @@ export class OpenAIClient {
                 }
                 totalUsage = totalUsage
                   ? {
-                      inputTokens: (totalUsage.inputTokens + mapped.inputTokens),
-                      outputTokens: (totalUsage.outputTokens + mapped.outputTokens),
-                      totalTokens: (totalUsage.totalTokens + mapped.totalTokens),
-                      cachedInputTokens: (totalUsage.cachedInputTokens + mapped.cachedInputTokens),
-                      reasoningTokens: (totalUsage.reasoningTokens + mapped.reasoningTokens),
+                      inputTokens: totalUsage.inputTokens + mapped.inputTokens,
+                      outputTokens: totalUsage.outputTokens + mapped.outputTokens,
+                      totalTokens: totalUsage.totalTokens + mapped.totalTokens,
+                      cachedInputTokens: totalUsage.cachedInputTokens + mapped.cachedInputTokens,
+                      reasoningTokens: totalUsage.reasoningTokens + mapped.reasoningTokens,
                     }
                   : mapped
               }

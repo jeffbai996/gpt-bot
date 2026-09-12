@@ -26,3 +26,37 @@ test('references stay scoped to eligible authors and reset cutoff', () => {
   assert.equal(selectImageReference(rows, 'user', 'bot', 'hello', null, 200), undefined)
 })
 
+
+test('image actions can retrieve an earlier message instead of requiring reupload', () => {
+  assert.deepEqual(parseImageRequest('{"image_request":{"prompt":"Repair the original","use_reference":true,"reference_message_id":"123"}}'),
+    {prompt:'Repair the original',useReference:true,referenceMessageId:'123'})
+  assert.throws(() => parseImageRequest('{"image_request":{"prompt":"Repair","reference_message_id":"https://example.com"}}'), /Invalid/)
+})
+
+test('production image path fetches the selected original instead of the newer bot edit', async () => {
+  const { readFile } = await import('node:fs/promises')
+  const { transpile } = await import('typescript')
+  const source = await readFile(new URL('../src/gpt.ts', import.meta.url), 'utf8')
+  const start = source.indexOf('      let referenceParts = imageParts')
+  const end = source.indexOf('      const image = await generateImage', start)
+  const factory = new Function('imageRequest', 'rawHistory', 'userId', 'selfId', 'imageParts', 'imagePaths', 'processAttachments', 'openaiRaw', 'Buffer',
+    transpile(`return (async () => { ${source.slice(start, end)} return references; })();`))
+  const history = [
+    {id:'100',authorId:'user',attachments:[{name:'original.png',url:'https://example.com/original.png',mimeType:'image/png'}]},
+    {id:'101',authorId:'bot',attachments:[{name:'revision.png',url:'https://example.com/revision.png',mimeType:'image/png'}]},
+    {id:'102',authorId:'other',attachments:[{name:'unrelated.png',url:'https://example.com/unrelated.png',mimeType:'image/png'}]},
+  ]
+  const retrieved: string[] = []
+  const paths: string[] = []
+  const process = async (attachments: Array<{url:string}>) => {
+    retrieved.push(...attachments.map(a => a.url))
+    return {imageParts:[{type:'image_url',image_url:{url:'data:image/png;base64,b3JpZ2luYWw='}}],imagePaths:['/tmp/example-original.png']}
+  }
+  const result = await factory({useReference:true,referenceMessageId:'100'},history,'user','bot',[],paths,process,null,Buffer)
+  assert.deepEqual(retrieved, ['https://example.com/original.png'])
+  assert.equal(result[0].data.toString(), 'original')
+  assert.deepEqual(paths, ['/tmp/example-original.png'])
+  for (const referenceMessageId of ['102', '999']) {
+    await assert.rejects(factory({useReference:true,referenceMessageId},history,'user','bot',[],[],process,null,Buffer), /unavailable/)
+  }
+})

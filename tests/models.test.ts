@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { DEFAULT_CODEX_MODEL, DEFAULT_OPENAI_MODEL, OPENAI_MODELS } from '../src/models.ts'
 
-test('API engine and postmortem stay on an available model while Codex uses the subscription model', () => {
+test('API engine and postmortem stay on an available model', () => {
   assert.equal(DEFAULT_OPENAI_MODEL, 'gpt-5.6-sol')
   assert.equal(DEFAULT_CODEX_MODEL, 'gpt-5.6-sol')
 })

@@ -213,7 +213,7 @@ npm install
 
 mkdir -p ~/.gpt/channels/discord
 cp .env.example ~/.gpt/channels/discord/.env
-# Fill in DISCORD_BOT_TOKEN, DISCORD_APP_ID, and OPENAI_API_KEY.
+# Fill in DISCORD_BOT_TOKEN, DISCORD_APP_ID, DISCORD_ADMIN_USER_ID, and OPENAI_API_KEY.
 
 npm run start
 ```
@@ -239,6 +239,7 @@ Runtime state defaults to `~/.gpt/channels/discord/` and can be moved with `GPT_
 | Variable | Purpose |
 |---|---|
 | `GPT_STATE_DIR` | runtime state directory |
+| `DISCORD_ADMIN_USER_ID` | required Discord snowflake for privileged commands and voice |
 | `GPT_INSTANCE_ID` | optional agent-registry namespace; defaults to `DISCORD_APP_ID` |
 | `GPT_CODEX_BIN` | Codex CLI path |
 | `GPT_CODEX_CHAT` | set `0` to disable Codex as the default engine |
@@ -253,7 +254,9 @@ Runtime state defaults to `~/.gpt/channels/discord/` and can be moved with `GPT_
 | `GPT_TRACE_FAILSAFE_MS` | optional transient-trace crash-cleanup override |
 | `GPT_HISTORY_TOKEN_BUDGET` | Discord-history budget |
 | `GPT_MODEL` | explicit API engine and postmortem model |
-| `GPT_MAX_TOOL_LOOPS` | API tool-loop cap |
+| `GPT_MAX_TOOL_LOOPS` | API tool-loop cap (default 16, hard cap 32) |
+| `GPT_MAX_ACTIVE_CHANNELS` / `GPT_MAX_QUEUED_PER_CHANNEL` / `GPT_MAX_OUTSTANDING_PER_USER` | hard-clamped global, per-channel, per-caller, and live-steering admission limits |
+| `GPT_MAX_DAILY_TURNS_PER_USER` / `GPT_MAX_DAILY_TURNS_GLOBAL` | persisted daily provider circuit breakers (defaults 200/500; hard maximum overrides 500/2,000) |
 | `GPT_MCP_URL` / `GPT_MCP_LABEL` | comma-separated MCP endpoints and labels |
 | `OLLAMA_URL` | local OpenAI-compatible embeddings/summarization endpoint |
 | `GPT_EMBEDDING_MODEL` / `GPT_EMBEDDING_DIM` | local embedding model and vector dimension |

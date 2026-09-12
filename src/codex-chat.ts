@@ -11,6 +11,7 @@ import { CodexAgentRegistry, type CodexAgentSnapshot } from './codex-agents.ts'
 import { beginTurn, noteRoundtrip, type LiveUsageDelta } from './live-usage.ts'
 import { CodexAppServerClient } from './codex-app-server.ts'
 import type { SteeringInbox } from './steering-inbox.ts'
+import { codexCompletionFailure, type ProviderFailure } from './provider-failure.ts'
 
 // Thrown when the runaway-process backstop SIGKILLs codex, so the caller can
 // surface an explicit 'interrupted' indicator instead of failing silently.
@@ -214,6 +215,10 @@ function buildPrompt(input: CodexChatInput): string {
     '',
     '--- You are chatting in a Discord conversation. Recent history (oldest first): ---',
     transcript || '(no prior messages)',
+    `The exact inbound Discord chat id is ${input.channelId ?? '(unknown)'}. Resolve words like "above", "here", ` +
+      '"this conversation", and "the transcript" against the supplied recent history first. If older context is ' +
+      'genuinely needed, constrain retrieval to this exact channel and the newest relevant messages before widening ' +
+      'the search. Never substitute a semantically similar conversation from another channel or date.',
     input.extraText?.trim() ? `\n[Additional context]\n${input.extraText.trim()}` : '',
     ...(SQUAD_STORE_BIN ? [
       '--- Shared memory (use when configured) ---',
@@ -462,10 +467,10 @@ export function normalizeAppServerNotification(message: any): any | null {
     return {
       type: 'usage.updated',
       usage: {
-        input_tokens: (usage.inputTokens ?? 0),
-        cached_input_tokens: (usage.cachedInputTokens ?? 0),
-        output_tokens: (usage.outputTokens ?? 0),
-        reasoning_output_tokens: (usage.reasoningOutputTokens ?? 0),
+        input_tokens: usage.inputTokens ?? 0,
+        cached_input_tokens: usage.cachedInputTokens ?? 0,
+        output_tokens: usage.outputTokens ?? 0,
+        reasoning_output_tokens: usage.reasoningOutputTokens ?? 0,
       },
     }
   }
@@ -615,6 +620,7 @@ export function commentaryProgress(ev: any): string | null {
   // same item.completed agent_message shape. Surface each one live; `-o` remains
   // authoritative for the final answer and replaces this placeholder afterward.
   if (ev?.type === 'item.completed' && ev.item?.type === 'agent_message') {
+    if (ev.item.phase && ev.item.phase !== 'commentary') return null
     const message = typeof ev.item.text === 'string' ? ev.item.text.trim() : ''
     return message || null
   }
@@ -1144,10 +1150,30 @@ export async function readLatestRateLimits(): Promise<RateLimits | null> {
 // Lean prompt for a RESUMED session: codex already holds persona + history in the
 // session, so send only the new user turn (+ any extra context). Keeping it minimal
 // is what stops the session from bloating turn over turn.
+export function formatResumeHistoryDelta(
+  history: OpenAI.Chat.Completions.ChatCompletionMessageParam[],
+): string {
+  let lastAssistant = -1
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (history[i].role === 'assistant') {
+      lastAssistant = i
+      break
+    }
+  }
+  const unseen = history.slice(lastAssistant + 1)
+    .map(message => typeof message.content === 'string' ? message.content : JSON.stringify(message.content))
+    .filter(content => content.trim())
+  if (!unseen.length) return ''
+  return '[Discord messages posted since your last reply — quoted current-channel context]\n' + unseen.join('\n')
+}
+
 function buildResumePrompt(input: CodexChatInput): string {
   const who = input.userName ? `[${input.userName}] ` : ''
   const extra = input.extraText?.trim() ? `\n\n[Additional context]\n${input.extraText.trim()}` : ''
-  return `${who}${input.userMessage}${extra}\n\n${LIVE_PROGRESS_INSTRUCTION}`
+  const delta = formatResumeHistoryDelta(input.history)
+  const currentChannelRule = `Exact Discord chat id: ${input.channelId ?? '(unknown)'}. Resolve "above", "here", ` +
+    'and "the transcript" from the quoted current-channel context before any broader retrieval.'
+  return `${delta ? `${delta}\n\n` : ''}${who}${input.userMessage}${extra}\n\n${currentChannelRule}\n${LIVE_PROGRESS_INSTRUCTION}`
 }
 
 export async function respondViaCodex(input: CodexChatInput): Promise<RespondResult> {
@@ -1203,6 +1229,7 @@ export async function respondViaCodex(input: CodexChatInput): Promise<RespondRes
   let turnId = ''
   let finalReply = ''
   let completedNormally = false
+  let providerFailure: ProviderFailure | null = null
   let steeringAttached = false
   let completeTurn!: () => void
   const turnCompleted = new Promise<void>(resolve => { completeTurn = resolve })
@@ -1302,7 +1329,8 @@ export async function respondViaCodex(input: CodexChatInput): Promise<RespondRes
         }
       }
       if (obj?.type === 'turn.completed') {
-        completedNormally = obj.status === 'completed'
+        providerFailure = codexCompletionFailure(obj)
+        completedNormally = obj.status === 'completed' && !providerFailure
         completeTurn()
       }
     } catch { /* non-JSON line */ }
@@ -1434,6 +1462,10 @@ export async function respondViaCodex(input: CodexChatInput): Promise<RespondRes
     const forced = processResult?.forced ? '; forced settle after failed child close' : ''
     logOutcome('timeout', `${timeoutKind ?? 'unknown'} watchdog fired${forced}`)
     throw new CodexInterruptedError(Date.now() - t0, timeoutKind ?? 'unknown')
+  }
+  if (providerFailure) {
+    logOutcome('error', 'OpenAI terminal provider failure')
+    throw providerFailure
   }
   if (processResult?.error) {
     logOutcome('error', processResult.error.message)

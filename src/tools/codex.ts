@@ -30,6 +30,25 @@ interface CodexHelperOptions {
   makeJobId?: () => string
 }
 
+const CODEX_READ_ONLY_ENV_KEYS = [
+  'HOME', 'PATH', 'USER', 'LOGNAME', 'SHELL', 'TMPDIR',
+  'LANG', 'LC_ALL', 'TERM', 'COLORTERM', 'NO_COLOR',
+  'CODEX_HOME', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'XDG_DATA_HOME',
+  'SSL_CERT_FILE', 'SSL_CERT_DIR',
+] as const
+
+export function codexReadOnlyEnv(
+  parent: NodeJS.ProcessEnv,
+  task: string,
+): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { CODEX_TASK: task }
+  for (const key of CODEX_READ_ONLY_ENV_KEYS) {
+    const value = parent[key]
+    if (value !== undefined) env[key] = value
+  }
+  return env
+}
+
 function cleanRepo(value: unknown, fallback = process.env.GPT_CODEX_DEFAULT_REPO || 'gpt-bot'): string | null {
   const raw = typeof value === 'string' && value.trim() ? value.trim() : fallback
   return raw !== '.' && raw !== '..' && /^[A-Za-z0-9._-]+$/.test(raw) ? raw : null
@@ -50,10 +69,10 @@ async function runCodexReadOnly(
     `-s read-only -C "${repoDir}" -o "${outfile}" "$CODEX_TASK" </dev/null >"${logfile}" 2>&1; ` +
     `if [ -s "${outfile}" ]; then cat "${outfile}"; else echo "(codex produced no answer)"; tail -8 "${logfile}"; fi`
   try {
-    const { stdout } = await execFileAsync('bash', ['-lc', script], {
+    const { stdout } = await execFileAsync('bash', ['--noprofile', '--norc', '-c', script], {
       timeout: timeoutMs + 10_000,
       maxBuffer: 8 * 1024 * 1024,
-      env: { ...process.env, CODEX_TASK: input.task },
+      env: codexReadOnlyEnv(process.env, input.task),
     })
     const out = (stdout || '').trim()
     if (!out) return 'codex: empty result'

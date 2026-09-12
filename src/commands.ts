@@ -8,7 +8,7 @@ import { globalSnapshot } from './cache-stats.ts'
 import { readLatestRateLimits, readSessionStats, type RateLimits, type RateWindow } from './codex-chat.ts'
 import { INTERRUPTED_MARKER } from './interruption-label.ts'
 import { DEFAULT_CODEX_MODEL, DEFAULT_OPENAI_MODEL } from './models.ts'
-import { generateImage } from './image-generation.ts'
+import { formatImageFooter, generateImage, quotePrompt } from './image-generation.ts'
 import {
   appendRuntimeChecks,
   type DoctorCheck,
@@ -239,11 +239,14 @@ export const gptCommand = new SlashCommandBuilder()
     .setDescription('Set or show the Codex model')
     .addStringOption(o => o.setName('value').setDescription('omit to show current; else pick a model').setRequired(false)
       .addChoices(
+        // Bare model ids, no blurbs (Jeff 2026-09-04). The descriptions
+        // padded every row and the friendly name hid what you were actually
+        // selecting — you pick a model here, so the menu says the model.
         { name: 'gpt-6-astra', value: 'gpt-6-astra' },
-        { name: 'gpt-5.6-sol - frontier coding', value: 'gpt-5.6-sol' },
-        { name: 'gpt-5.6-terra - balanced', value: 'gpt-5.6-terra' },
-        { name: 'gpt-5.6-luna - high-throughput', value: 'gpt-5.6-luna' },
-        { name: 'Daybreak Blue - defensive cyber', value: 'gpt-daybreak-blue-latest' },
+        { name: 'gpt-5.6-sol', value: 'gpt-5.6-sol' },
+        { name: 'gpt-5.6-terra', value: 'gpt-5.6-terra' },
+        { name: 'gpt-5.6-luna', value: 'gpt-5.6-luna' },
+        { name: 'gpt-daybreak-blue-latest', value: 'gpt-daybreak-blue-latest' },
       ))
     .addChannelOption(o => o.setName('channel').setDescription('Channel (defaults to current)').setRequired(false))
   )
@@ -344,6 +347,14 @@ export interface CompactCommandDeps {
   stopChannel?: (channelIds: Array<string | null | undefined>) => string | null
 }
 
+export function requireAdminUserId(raw: string | undefined): string {
+  const value = raw?.trim() ?? ''
+  if (!/^\d{17,20}$/.test(value)) {
+    throw new Error('DISCORD_ADMIN_USER_ID must be a valid Discord user ID')
+  }
+  return value
+}
+
 export type CompactResult =
   | { status: 'busy' }
   | { status: 'unavailable' }
@@ -375,7 +386,7 @@ export async function executeGptCommand(
   adminUserId: string | undefined,
   deps: CompactCommandDeps = { summarizer: null },
 ) {
-  if (adminUserId && interaction.user.id !== adminUserId) {
+  if (!adminUserId || interaction.user.id !== adminUserId) {
     return interaction.reply({ content: 'Unauthorized. You are not the designated bot admin.', ephemeral: true })
   }
 
@@ -386,12 +397,20 @@ export async function executeGptCommand(
       await interaction.deferReply()
       try {
         const model = interaction.options.getString('model') ?? 'gpt-image-2.5-sunburst'
+        const prompt = interaction.options.getString('prompt', true)
         const image = await generateImage(process.env.OPENAI_API_KEY ?? '', {
-          prompt: interaction.options.getString('prompt', true), model,
+          prompt, model,
           size: interaction.options.getString('size') ?? undefined,
           quality: interaction.options.getString('quality') ?? undefined,
         })
-        return await interaction.editReply({ content: `🎨 ${model}`, files: [image], allowedMentions: { parse: [] } })
+        // The prompt sits above the picture. A slash command's options are
+        // visible only to whoever ran it, so without this nobody else in the
+        // channel can see what was asked for.
+        return await interaction.editReply({
+          content: `${quotePrompt(prompt)}\n\n${formatImageFooter(image)}`,
+          files: [{ attachment: image.attachment, name: image.name }],
+          allowedMentions: { parse: [] },
+        })
       } catch (error) {
         const message = error instanceof Error && /^(Image API|Generated image|OPENAI_API_KEY|Unsupported|Prompt must)/.test(error.message)
           ? error.message : 'Image generation or upload failed. Try again; a timed-out request may still be billed.'

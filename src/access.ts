@@ -203,6 +203,10 @@ export class AccessManager {
     return true
   }
 
+  isUserAllowed(userId: string): boolean {
+    return this.data.users[userId]?.allowed === true
+  }
+
   isAllowedAndEnabled(userId: string, channelId: string, parentChannelId?: string | null): boolean {
     return this.canReact(userId, channelId, parentChannelId)
   }

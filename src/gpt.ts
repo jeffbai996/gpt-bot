@@ -1,14 +1,17 @@
+import { NarrationHistory, narrationBlocks } from './narration-history.ts'
 import { PresenceOwner } from './presence-owner.ts'
 import { imageConversationInstruction, parseImageRequest, selectImageReference } from './image-conversation.ts'
-import { generateImage } from './image-generation.ts'
+import { formatImageFooter, generateImage, quotePrompt } from './image-generation.ts'
 import { codeBlock, ActionRowBuilder, ButtonBuilder, ButtonStyle, Client, GatewayIntentBits, Partials, ActivityType, REST, Routes, type Message, type TextChannel, type DMChannel, type ThreadChannel } from 'discord.js'
 import path from 'path'
 import os from 'os'
 import fs from 'fs'
+import { scanOutboundFiles } from './outbound-files.ts'
 import { setTimeout as sleep } from 'node:timers/promises'
 import dotenv from 'dotenv'
 import { AccessManager } from './access.ts'
 import { isAddressedToAnotherUser } from './mention-gate.ts'
+import { ProviderFailure, providerFailureNotice } from './provider-failure.ts'
 import {
   formatPinContext,
   formatReplyContext,
@@ -21,7 +24,7 @@ import {
 import { PersonaLoader } from './persona.ts'
 import { chunk } from './chunk.ts'
 import { closeDanglingInlineCode } from './discord-markdown.ts'
-import { gptCommand, executeGptCommand } from './commands.ts'
+import { gptCommand, executeGptCommand, requireAdminUserId } from './commands.ts'
 import { recordCommandUsage } from './command-usage.ts'
 import { addVoiceGroup, executeVoiceCommand, VoiceManager } from './voice/command.ts'
 import { OpenAIClient, OpenAIRequestRejected } from './openai.ts'
@@ -57,6 +60,7 @@ import { readSelfCgroupMemoryBytes } from './cgroup-memory.ts'
 import { renderSteeredMessage } from './steering.ts'
 import { frameLiveSteerMessage, frameSteeredMessages } from './steer-context.ts'
 import { SteeringInbox } from './steering-inbox.ts'
+import { TurnAdmissionLedger } from './turn-admission.ts'
 import { logTurnLifecycle } from './turn-lifecycle.ts'
 import {
   GRACEFUL_SHUTDOWN_DEADLINE_MS,
@@ -100,7 +104,6 @@ import {
   resolveTraceFailsafeMs,
 } from './tool-trace.ts'
 import {
-  appendNarrationTrace,
   formatHeartbeatFooter,
   formatLiveWorkMessage,
   formatReasoningSnapshot,
@@ -135,7 +138,7 @@ function failureActions(messageId: string) {
     new ButtonBuilder().setCustomId(`gpt_retry:${messageId}`).setLabel('Retry').setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId(`gpt_resume:${messageId}`).setLabel('Resume').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(`gpt_error:${messageId}`).setLabel('Show error').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`gpt_switch:${messageId}`).setLabel('Switch engine').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`gpt_switch:${messageId}`).setLabel('Use API').setStyle(ButtonStyle.Secondary),
   )
 }
 
@@ -343,7 +346,21 @@ const DISCORD_TOKEN: string = process.env.DISCORD_BOT_TOKEN
 const APP_ID: string = process.env.DISCORD_APP_ID
 const OPENAI_KEY: string = process.env.OPENAI_API_KEY
 const DEFAULT_MODEL: string = process.env.GPT_MODEL || DEFAULT_OPENAI_MODEL
-const ADMIN_USER_ID: string | undefined = process.env.DISCORD_ADMIN_USER_ID
+const SESSION_SECURITY_EPOCH = 'history-auth-v1-2026-08-25'
+let ADMIN_USER_ID: string
+try {
+  ADMIN_USER_ID = requireAdminUserId(process.env.DISCORD_ADMIN_USER_ID)
+} catch (error) {
+  console.error(`FATAL: ${(error as Error).message}. Set it in ${path.join(STATE_DIR, '.env')}`)
+  process.exit(1)
+}
+try {
+  const invalidated = channelSessions.invalidateAllOnce(SESSION_SECURITY_EPOCH)
+  if (invalidated > 0) console.log(`security migration: invalidated ${invalidated} resumable channel session(s)`)
+} catch (error) {
+  console.error('FATAL: failed to invalidate pre-authorization channel sessions:', error)
+  process.exit(1)
+}
 const access = new AccessManager()
 const persona = new PersonaLoader()
 const pendingEdits = new PendingEditsStore()
@@ -375,6 +392,18 @@ const openaiRaw = new OpenAI({ apiKey: OPENAI_KEY })
 const OLLAMA_URL = process.env.OLLAMA_URL || 'http://100.94.27.37:11434'
 const ollamaClient = new OpenAI({ apiKey: 'ollama', baseURL: OLLAMA_URL + '/v1' })
 
+// Embeddings run on THIS host's own Ollama, never the remote GPU box. That box
+// only holds a chat model, loaded deliberately, and has no embedding model on
+// it — so every passive message embed and every search_memory query was POSTing
+// /v1/embeddings there and getting 404, silently, roughly every 40s, for as
+// long as this has been deployed. Memory ingestion has not been working.
+//
+// Kept as a SEPARATE client rather than repointing OLLAMA_URL, because that URL
+// also carries summarization and the doctor model list, which do belong on the
+// remote box. Mirrors llm-bot's LLM_EMBEDDING_OLLAMA_URL split.
+const LOCAL_OLLAMA_URL = process.env.GPT_LOCAL_OLLAMA_URL || 'http://127.0.0.1:11434'
+const localOllama = new OpenAI({ apiKey: 'ollama', baseURL: LOCAL_OLLAMA_URL + '/v1' })
+
 // Realtime voice-to-voice, under `/gpt voice …`. Owner-gated; empty admin id =
 // nobody, which safely disables it. The real persona + tool registry are built
 // PER JOIN (they depend on the channel/guild) and passed into executeVoiceCommand,
@@ -382,7 +411,7 @@ const ollamaClient = new OpenAI({ apiKey: 'ollama', baseURL: OLLAMA_URL + '/v1' 
 // constructor only carries the bits that don't change per call.
 const voiceManager = new VoiceManager({
   apiKey: OPENAI_KEY,
-  adminUserId: ADMIN_USER_ID ?? '',
+  adminUserId: ADMIN_USER_ID,
   log: (m) => console.error(`[voice] ${m}`),
 })
 // Attach `/gpt voice join|type|model|leave|speak` onto the existing /gpt command builder.
@@ -399,7 +428,7 @@ if (!memoryStore) {
 // model) plus the Ollama client for the embedding-backed search_memory tool —
 // query embeddings MUST use the same backend as stored vectors or search is
 // garbage.
-const toolRegistry = await buildDefaultRegistry(openaiRaw, memoryStore, ollamaClient)
+const toolRegistry = await buildDefaultRegistry(openaiRaw, memoryStore, localOllama)
 
 // Summarization scheduler. Wires only when the SQLite-backed memory store is
 // available — summaries persist into the same conversation_summaries table.
@@ -408,13 +437,7 @@ const SUMMARIZATION_BATCH_LIMIT = parseInt(process.env.GPT_SUMMARIZATION_BATCH_L
 // Summarization runs on the local Ollama client with a local model by default
 // (was metered API inference on every rollup). Override the model via
 // GPT_SUMMARIZATION_MODEL; it resolves against whichever client is wired below.
-const CONFIGURED_SUMMARIZATION_MODEL = process.env.GPT_SUMMARIZATION_MODEL ?? DEFAULT_SUMMARIZATION_MODEL
-const SUMMARIZATION_MODEL = CONFIGURED_SUMMARIZATION_MODEL === 'qwen3.6:27b-mtp-q4_K_M'
-  ? 'qwen3.8:27b-mtp-q4_K_M'
-  : CONFIGURED_SUMMARIZATION_MODEL
-if (SUMMARIZATION_MODEL !== CONFIGURED_SUMMARIZATION_MODEL) {
-  console.error(`[summarization] retired model ${CONFIGURED_SUMMARIZATION_MODEL}; using ${SUMMARIZATION_MODEL}`)
-}
+const SUMMARIZATION_MODEL = process.env.GPT_SUMMARIZATION_MODEL ?? DEFAULT_SUMMARIZATION_MODEL
 const summaryStore = memoryStore ? SummaryStore.fromMemory(memoryStore) : null
 if (summaryStore) persona.setSummaryStore(summaryStore)
 const summarizer: SummarizationScheduler | null = (memoryStore && summaryStore)
@@ -429,7 +452,7 @@ const summarizer: SummarizationScheduler | null = (memoryStore && summaryStore)
           messageId: r.id
         }))
       },
-      client: ollamaClient,
+      client: localOllama,
       model: SUMMARIZATION_MODEL,
       threshold: SUMMARIZATION_THRESHOLD,
       batchLimit: SUMMARIZATION_BATCH_LIMIT
@@ -474,7 +497,7 @@ function ingestTranscriptRow(row: {
     return false
   }
   if (allowEmbedding && shouldEmbed(row.channel_id, row.author_id)) {
-    void embed(ollamaClient, row.content).then(vector => {
+    void embed(localOllama, row.content).then(vector => {
       if (vector) memoryStore.insertMessageEmbedding(row.id, vector)
     }).catch(e => console.error('transcript embed failed:', e instanceof Error ? e.message : e))
   }
@@ -510,20 +533,45 @@ const shutdownGate = new ShutdownGate()
 const activeAgentViews = new Map<string, (agents: CodexAgentSnapshot[]) => Promise<void>>()
 const activeLifecycleTrackers = new Map<string, TurnLifecycleTracker>()
 const QUEUE_SETTLE_MS = Number(process.env.GPT_QUEUE_SETTLE_MS) || 0
-const MAX_GLOBAL_TURNS = Math.max(1, Number(process.env.GPT_MAX_GLOBAL_TURNS) || 2)
-const MEMORY_HIGH_WATER_BYTES = Math.max(1, Number(process.env.GPT_MEMORY_HIGH_WATER_MB) || 3_200) * 1024 * 1024
-const MEMORY_LOW_WATER_BYTES = Math.max(0, Number(process.env.GPT_MEMORY_LOW_WATER_MB) || 2_600) * 1024 * 1024
+function boundedQueueLimit(raw: string | undefined, fallback: number, hardMax: number): number {
+  const parsed = Number(raw)
+  return Number.isSafeInteger(parsed) && parsed > 0 ? Math.min(parsed, hardMax) : fallback
+}
+const MAX_QUEUED_PER_CHANNEL = boundedQueueLimit(process.env.GPT_MAX_QUEUED_PER_CHANNEL, 8, 32)
+const MAX_ACTIVE_CHANNELS = boundedQueueLimit(process.env.GPT_MAX_ACTIVE_CHANNELS, 4, 16)
+const MAX_OUTSTANDING_PER_USER = boundedQueueLimit(process.env.GPT_MAX_OUTSTANDING_PER_USER, 4, 8)
+const MAX_DAILY_TURNS_PER_USER = boundedQueueLimit(process.env.GPT_MAX_DAILY_TURNS_PER_USER, 200, 500)
+const MAX_DAILY_TURNS_GLOBAL = boundedQueueLimit(process.env.GPT_MAX_DAILY_TURNS_GLOBAL, 500, 2_000)
+const MAX_GLOBAL_TURNS = boundedQueueLimit(process.env.GPT_MAX_GLOBAL_TURNS, 2, 4)
+const configuredHighWater = Number(process.env.GPT_MEMORY_HIGH_WATER_MB)
+const configuredLowWater = Number(process.env.GPT_MEMORY_LOW_WATER_MB)
+const MEMORY_HIGH_WATER_BYTES = (Number.isFinite(configuredHighWater) && configuredHighWater > 0
+  ? configuredHighWater : 3_200) * 1024 * 1024
+const MEMORY_LOW_WATER_BYTES = (Number.isFinite(configuredLowWater) && configuredLowWater >= 0
+  ? configuredLowWater : 2_600) * 1024 * 1024
 const globalTurns = new GlobalTurnAdmission({
   maxActive: MAX_GLOBAL_TURNS,
   highWaterBytes: MEMORY_HIGH_WATER_BYTES,
   lowWaterBytes: Math.min(MEMORY_LOW_WATER_BYTES, MEMORY_HIGH_WATER_BYTES - 1),
   memoryBytes: readSelfCgroupMemoryBytes,
 })
+let turnAdmission: TurnAdmissionLedger
+try {
+  turnAdmission = new TurnAdmissionLedger(
+    path.join(STATE_DIR, 'turn-admission.json'),
+    { perPrincipal: MAX_DAILY_TURNS_PER_USER, global: MAX_DAILY_TURNS_GLOBAL },
+  )
+} catch (error) {
+  console.error('FATAL: turn admission ledger is unavailable:', error)
+  process.exit(1)
+}
 interface QueuedChannelTurn {
   message: Message
   target: Message | null
   contentOverride?: string
   actor?: TrustedRelay
+  principal?: { userId: string, userName: string }
+  expansion: boolean
   steered: boolean
 }
 const channelTurns = new ChannelTurnRunner<QueuedChannelTurn>(
@@ -557,18 +605,18 @@ const channelTurns = new ChannelTurnRunner<QueuedChannelTurn>(
         () => handleUserMessage(
           carrier.message,
           batch.length === 1 ? carrier.target : null,
-          false,
+          batch.length === 1 ? carrier.expansion : false,
           combined || undefined,
           carrier.actor,
+          carrier.principal,
         ),
         {
           onQueued: async position => {
-            const receipt = await replyOrSend(
+            queueReceipt = await replyOrSend(
               carrier.message,
               codeBlock('text', `⏳ queued globally · position ${position} · ${globalTurns.snapshot().running}/${MAX_GLOBAL_TURNS} running`),
               !carrier.actor,
             )
-            queueReceipt = receipt
           },
           beforeStart: clearQueueReceipt,
           onCancelled: clearQueueReceipt,
@@ -580,6 +628,12 @@ const channelTurns = new ChannelTurnRunner<QueuedChannelTurn>(
   },
   channelId => activeTurns.consumeStopped(channelId),
   QUEUE_SETTLE_MS,
+  {
+    maxQueuedPerChannel: MAX_QUEUED_PER_CHANNEL,
+    maxActiveChannels: MAX_ACTIVE_CHANNELS,
+    maxOutstandingPerKey: MAX_OUTSTANDING_PER_USER,
+    keyForItem: item => item.principal?.userId ?? item.actor?.userId ?? item.message.author.id,
+  },
 )
 
 function stopResolvableTurn(channelIds: Array<string | null | undefined>): string | null {
@@ -606,6 +660,10 @@ const restartCoordinator = new RestartCoordinator(
   },
   () => shutdownGate.beginDrain(),
   {
+    isIdle: () => shutdownGate.isIdle()
+      && activeTurns.isIdle()
+      && channelTurns.isIdle()
+      && globalTurns.isIdle(),
     onDeadline: () => {
       logTurnLifecycle({ event: 'restart_drain_deadline', restartPhase: 'draining' })
       console.error('[restart] drain exceeded its warning deadline; continuing to wait for active work')
@@ -688,12 +746,42 @@ client.once('ready', async () => {
   }
 })
 
+async function retryFailure(messageId: string, target: Message, principal: { userId: string, userName: string }, action = 'gpt_retry'): Promise<string | null> {
+  const failed = failedTurns.get(messageId)
+  if (!failed || failed.channelId !== target.channelId || target.author.id !== client.user?.id ||
+      !access.isAllowedAndEnabled(principal.userId, target.channelId)) return 'That failed turn is no longer resumable.'
+  if (shutdownGate.isDraining()) return '⚠️ Restarting; retry once I’m back.'
+  if (channelTurns.isRunning(target.channelId)) return 'A turn is already running here. Retry when it finishes.'
+  const sourceChannel = await client.channels.fetch(failed.channelId).catch(() => null)
+  const source = sourceChannel?.isTextBased()
+    ? await sourceChannel.messages.fetch(failed.sourceMessageId).catch(() => null) : null
+  if (!source) return 'The original message is gone, so this turn cannot be retried.'
+  if (!failedTurns.claim(messageId)) return 'That retry was already picked up.'
+  try {
+    if (action === 'gpt_switch') await access.setChannelFlags(target.channelId, { engine: 'api' })
+    await target.edit({ components: [] }).catch(() => {})
+    await target.reactions.removeAll().catch(() => {})
+    const content = action === 'gpt_resume'
+      ? `${source.content}\n\n[Resume the interrupted work from the last safe boundary. Reuse the existing Codex session and do not restart completed steps.]`
+      : undefined
+    await runChannelTurn(source, target, content, undefined, false, principal)
+    return null
+  } catch (error) {
+    failedTurns.set(messageId, failed)
+    await target.edit({ components: [failureActions(messageId)] }).catch(() => {})
+    await target.react('🔁').catch(() => {})
+    throw error
+  }
+}
+
 client.on('interactionCreate', async interaction => {
   if (interaction.channel?.isThread()) access.noteChannelParent(interaction.channelId!, interaction.channel.parentId)
   if (interaction.isButton() && interaction.customId.startsWith('gpt_')) {
     const [action, messageId] = interaction.customId.split(':')
     const failed = failedTurns.get(messageId)
-    if (!failed || !access.isAllowedAndEnabled(interaction.user.id, interaction.channelId ?? '')) {
+    if (!['gpt_retry', 'gpt_resume', 'gpt_error', 'gpt_switch'].includes(action) ||
+        !failed || failed.channelId !== interaction.channelId || messageId !== interaction.message.id ||
+        !access.isAllowedAndEnabled(interaction.user.id, interaction.channelId ?? '')) {
       await interaction.reply({ content: 'That failed turn is no longer resumable.', ephemeral: true }).catch(() => {})
       return
     }
@@ -704,28 +792,10 @@ client.on('interactionCreate', async interaction => {
       }).catch(() => {})
       return
     }
-    const sourceChannel = await client.channels.fetch(failed.channelId).catch(() => null)
-    const source = sourceChannel?.isTextBased()
-      ? await sourceChannel.messages.fetch(failed.sourceMessageId).catch(() => null)
-      : null
-    if (!source) {
-      failedTurns.delete(messageId)
-      await interaction.reply({
-        content: 'The original message is gone, so this turn cannot be retried.',
-        ephemeral: true,
-      }).catch(() => {})
-      return
-    }
     await interaction.deferUpdate()
-    if (action === 'gpt_switch') {
-      const current = access.channelFlags(interaction.channelId!).engine
-      await access.setChannelFlags(interaction.channelId!, { engine: current === 'codex' ? 'api' : 'codex' })
-    }
-    const resume = action === 'gpt_resume'
-    const content = resume
-      ? `${source.content}\n\n[Resume the interrupted work from the last safe boundary. Reuse the existing Codex session and do not restart completed steps.]`
-      : undefined
-    await handleUserMessage(source, interaction.message as Message, false, content)
+    const notice = await retryFailure(messageId, interaction.message as Message,
+      { userId: interaction.user.id, userName: interaction.user.username }, action)
+    if (notice) await interaction.followUp({ content: notice, ephemeral: true }).catch(() => {})
     return
   }
   if (!interaction.isChatInputCommand()) return
@@ -741,7 +811,15 @@ client.on('interactionCreate', async interaction => {
   await recordCommandUsage(slashPath)
   // /gpt voice … is a subcommand group; route it to the voice handler.
   if (interaction.options.getSubcommandGroup(false) === 'voice') {
-    await executeVoiceCommand(interaction, voiceManager, ADMIN_USER_ID ?? '', persona, toolRegistry)
+    await executeVoiceCommand(
+      interaction,
+      voiceManager,
+      ADMIN_USER_ID,
+      persona,
+      toolRegistry,
+      {},
+      access,
+    )
     return
   }
   await executeGptCommand(interaction, access, ADMIN_USER_ID, {
@@ -808,10 +886,11 @@ async function handleUserMessage(
   expansion: boolean,
   contentOverride?: string,
   actor?: TrustedRelay,
+  principal?: { userId: string, userName: string },
 ): Promise<void> {
   const channelId = message.channel.id
-  const userId = actor?.userId ?? message.author.id
-  const userName = actor?.userName ?? message.author.username
+  const userId = principal?.userId ?? actor?.userId ?? message.author.id
+  const userName = principal?.userName ?? actor?.userName ?? message.author.username
   // When a batched-queue turn folds several messages together, the combined
   // text comes in via contentOverride; otherwise use the message's own content.
   const userText = contentOverride ?? message.content
@@ -830,7 +909,7 @@ async function handleUserMessage(
   const selfId = client.user?.id ?? ''
   const stopController = new AbortController()
   const steeringInbox = flags.engine !== 'api' && process.env.GPT_CODEX_CHAT !== '0'
-    ? new SteeringInbox()
+    ? new SteeringInbox(MAX_OUTSTANDING_PER_USER)
     : null
   // The signed marker is machine plumbing and gets deleted on admission. It
   // must not collect user-message lifecycle reactions or noisy 404s.
@@ -884,7 +963,13 @@ async function handleUserMessage(
           timestamp: new Date(prior.createdTimestamp).toISOString(),
         }, false)
       }
-      history = await formatHistoryForOpenAI(rawFiltered, selfId)
+      history = await formatHistoryForOpenAI(
+        rawFiltered,
+        selfId,
+        undefined,
+        undefined,
+        authorId => access.isUserAllowed(authorId),
+      )
       // Observability (Jeff 2026-06-29): empty history = the bot loses context
       // for the turn. Log the counts so a fetch hiccup / over-aggressive cutoff
       // is visible instead of silently degrading (and burning tokens on a
@@ -919,6 +1004,7 @@ async function handleUserMessage(
   let imageParts: NonNullable<Parameters<typeof openai.respond>[0]['imageParts']> = []
   let imagePaths: string[] = []
   let temporaryResultFiles: string[] = []
+  let generatedImageFooter = ''
   let extraText = ''
   if (attachments.length > 0) {
     await lifecycle.transition('ingesting')
@@ -970,7 +1056,8 @@ async function handleUserMessage(
   let lastProgressText = ''
   let liveHeadline = ''
   const liveReasoningTrace: string[] = []
-  let liveNarrationTrace: string[] = []
+  const narrationHistory = new NarrationHistory()
+  let narrationMessageId: string | null = null
   let liveDetail = ''
   let liveFooter = ''
   let liveCompacting = false
@@ -1005,13 +1092,14 @@ async function handleUserMessage(
     liveEditTask = null
     if (!await awaitBounded(pending)) abandonWedgedPlaceholder()
   }
-  const settleLiveUi = async (respectProgressDwell = false) => {
+  const settleLiveUi = async (respectProgressDwell = false, finalReply = '') => {
     if (respectProgressDwell) {
       const remaining = liveProgressHoldUntil - Date.now()
       if (remaining > 0) await sleep(remaining)
     }
     liveUiClosed = true
     await stopThinkingAnim()
+    await narrationHistory.finish(retireNarration, finalReply).catch(e => console.error('[narration] final demotion failed:', e))
   }
   let interruptionRendered = false
   const renderInterruptedTurn = async () => {
@@ -1111,16 +1199,38 @@ async function handleUserMessage(
     placeholderTimer = setTimeout(() => { void postPlaceholder() }, PLACEHOLDER_DELAY_MS)
   }
 
+  // Retire in place before giving the spinner a new message. Retired messages
+  // leave the crash-cleanup registry and are never scheduled for deletion.
+  const retireNarration = async (text: string): Promise<void> => {
+    if (!message.channel.isSendable()) return
+    const blocks = narrationBlocks(text)
+    const prior = workMessage && workMessage.id === narrationMessageId && !targetMessage
+      ? workMessage : null
+    if (prior) {
+      await prior.edit({ content: blocks[0], allowedMentions: { parse: [] } })
+      pendingPlaceholders.untrack(prior.id)
+      workMessage = null
+      placeholderId = null
+      narrationMessageId = null
+      lastEditedText = ''
+    }
+    for (const content of blocks.slice(prior ? 1 : 0)) {
+      await message.channel.send({ content, allowedMentions: { parse: [] } })
+    }
+  }
+
   // Serialize and coalesce all live-card changes. Model streams can emit a
   // lifecycle event per token; Discord should see one accumulated snapshot per
   // interval, never a queue of stale word-sized PATCH requests.
   let lastEditedText = ''
   const renderLiveNow = async (): Promise<void> => {
+    const previousWorkId = workMessage?.id
     if (liveUiClosed) return
     if (liveEditTask) await liveEditTask.catch(() => {})
     if (liveUiClosed) return
     const task = (async () => {
       if (liveUiClosed) return
+      await narrationHistory.advance(retireNarration)
       await postPlaceholder()
       if (!workMessage || liveUiClosed) return
       const accumulatesReasoning = flags.thinking === 'on' || flags.thinking === 'collapse'
@@ -1129,8 +1239,7 @@ async function handleUserMessage(
         activity: liveCompacting ? 'compacting' : 'thinking',
         headline: accumulatesReasoning ? '' : liveHeadline,
         reasoningTrace: accumulatesReasoning ? liveReasoningTrace : [],
-        detail: liveDetail,
-        narrationTrace: flags.thinking === 'collapse' ? liveNarrationTrace : [],
+        detail: narrationHistory.current || liveDetail,
         footer: liveFooter,
         spinnerGlyph,
         spinnerDots,
@@ -1147,6 +1256,7 @@ async function handleUserMessage(
       lastRenderedProgressText = dwell.lastText
       liveProgressHoldUntil = dwell.holdUntil
       const target = workMessage
+      if (narrationHistory.current) narrationMessageId = target.id
       if (!await awaitBounded(target.edit(display)) && workMessage === target) {
         abandonWedgedPlaceholder()
       }
@@ -1154,6 +1264,17 @@ async function handleUserMessage(
     liveEditTask = task
     await task
     if (liveEditTask === task) liveEditTask = null
+    // Discord cannot reorder messages. Move the trace, then the active work
+    // card, only when narration created a new card (never on spinner ticks).
+    if (!liveUiClosed && workMessage && workMessage.id !== previousWorkId
+        && message.channel.isSendable()) {
+      const traceChannel = message.channel as TextChannel | DMChannel | ThreadChannel
+      await rehomeLiveTraceAtBottom(traceChannel, workMessage, true)
+      const anchor = liveTraceMsgs.at(-1)
+      if (anchor && workMessage && isNewerDiscordMessage(anchor.id, workMessage.id)) {
+        await rehomeLiveWorkBelowTrace(traceChannel)
+      }
+    }
   }
   const queueLiveRender = (): void => {
     if (liveUiClosed) return
@@ -1237,6 +1358,7 @@ async function handleUserMessage(
   let agentSpinnerFrame = 0
   let liveTraceMsgs: Message[] = []
   let liveTracePending = false
+  let liveTraceFlushTask: Promise<void> | null = null
   let liveTraceDirty = false
   let liveTraceClosed = false
   let liveWorkRehomeTask: Promise<void> | null = null
@@ -1271,11 +1393,12 @@ async function handleUserMessage(
       if (!previous || liveUiClosed) return
       const content = previous.content || lastEditedText || `💭 ✻ **${effortLabel}…**`
       const replacement = await traceChannel.send(content).catch(() => null)
-      if (!replacement || liveUiClosed) {
+      if (!replacement || liveUiClosed || workMessage !== previous) {
         if (replacement) await replacement.delete().catch(() => {})
         return
       }
       workMessage = replacement
+      if (narrationMessageId === previous.id) narrationMessageId = replacement.id
       pendingPlaceholders.untrack(previous.id)
       pendingPlaceholders.track(message.channel.id, replacement.id, message.id)
       placeholderId = replacement.id
@@ -1290,15 +1413,19 @@ async function handleUserMessage(
   const rehomeLiveTraceAtBottom = async (
     traceChannel: TextChannel | DMChannel | ThreadChannel,
     below: Message | null,
+    withNarration = false,
   ): Promise<void> => {
-    if (flags.trace !== 'live' || liveTraceClosed || !below || !liveTraceMsgs.length) return
+    if ((flags.trace !== 'live' && !withNarration) || flags.trace === 'off' || liveTraceClosed || !below || !liveTraceMsgs.length) return
     if (liveTraceRehomeTask) {
       await liveTraceRehomeTask
-      return rehomeLiveTraceAtBottom(traceChannel, below)
+      return rehomeLiveTraceAtBottom(traceChannel, below, withNarration)
     }
     const anchor = liveTraceMsgs.at(-1)
     if (!anchor || !isNewerDiscordMessage(below.id, anchor.id)) return
     const task = (async () => {
+      // Finish any edit against the old messages before replacing their IDs.
+      if (liveTraceFlushTask) await liveTraceFlushTask
+      if (liveTraceClosed) return
       const previousTraceMessages = [...liveTraceMsgs]
       const replacements: Message[] = []
       for (const current of previousTraceMessages) {
@@ -1320,8 +1447,13 @@ async function handleUserMessage(
     liveTraceRehomeTask = task
     await task
     if (liveTraceRehomeTask === task) liveTraceRehomeTask = null
+    if (liveTraceDirty) {
+      liveTraceDirty = false
+      flushLiveTrace()
+    }
   }
   const flushLiveTrace = () => {
+    if (liveTraceRehomeTask) { liveTraceDirty = true; return }
     if (liveTraceClosed || liveTracePending
         || (!liveToolRows.length && !liveAgents.length)
         || !message.channel.isSendable()) return
@@ -1333,7 +1465,7 @@ async function handleUserMessage(
       Date.now(),
       agentSpinnerFrame,
     )
-    ;(async () => {
+    liveTraceFlushTask = (async () => {
       if (liveTraceClosed) return
       let appendedTraceCard = false
       for (let i = 0; i < cards.length; i++) {
@@ -1358,6 +1490,7 @@ async function handleUserMessage(
     })().catch(() => {
       // Trace display is diagnostic only; never fail the user turn over Discord.
     }).finally(() => {
+      liveTraceFlushTask = null
       liveTracePending = false
       if (liveTraceDirty) {
         liveTraceDirty = false
@@ -1479,10 +1612,7 @@ async function handleUserMessage(
       return
     }
     if (event.type === 'progress') {
-      if (flags.thinking === 'collapse') {
-        liveNarrationTrace = appendNarrationTrace(liveNarrationTrace, event.reply)
-      }
-      queueLiveText(event.reply, true)
+      if (narrationHistory.accept(event.reply)) queueLiveText(event.reply, true)
       return
     }
     if (event.type === 'reasoning_progress') {
@@ -1686,6 +1816,9 @@ async function handleUserMessage(
           }
           return
         }
+        // A terminal provider failure needs a deterministic visible receipt,
+        // not another model request to explain why the first one was rejected.
+        if (e instanceof ProviderFailure || providerFailureNotice(e)) throw e
         // An intentional restart must never become an API postmortem. Deploys now
         // signal only MainPID, but retain this guard for shutdown races and old
         // senders that may still target the service cgroup.
@@ -1765,21 +1898,43 @@ async function handleUserMessage(
     const imageRequest = codexFailureLifecycle ? null : parseImageRequest(result.reply)
     if (imageRequest) {
       throwIfStopped()
-      if (workMessage) await workMessage.edit('🎨 **Generating image…**').catch(() => {})
-      const references = imageRequest.useReference ? imageParts.flatMap(part => {
+      await settleLiveUi()
+      if (workMessage) {
+        await workMessage.edit('🎨 **Generating image…**')
+      } else if (message.channel.isSendable()) {
+        workMessage = await message.channel.send('🎨 **Generating image…**')
+        placeholderId = workMessage.id
+        pendingPlaceholders.track(channelId, workMessage.id, message.id)
+      }
+      let referenceParts = imageParts
+      if (imageRequest.referenceMessageId) {
+        const source = rawHistory.find(prior => prior.id === imageRequest.referenceMessageId
+          && [userId, selfId].includes(prior.authorId))
+        const selected = source?.attachments.filter(att => /^image\/(png|jpeg|webp)$/.test(att.mimeType ?? '')) ?? []
+        if (!selected.length) throw new Error('The selected earlier image is unavailable in this channel history.')
+        const processed = await processAttachments(selected.map(att => ({ ...att, contentType: att.mimeType })), openaiRaw)
+        referenceParts = processed.imageParts
+        imagePaths.push(...processed.imagePaths)
+      }
+      const references = imageRequest.useReference ? referenceParts.flatMap(part => {
         const url = part.type === 'image_url' ? part.image_url.url : ''
         const match = /^data:(image\/(?:png|jpeg|webp));base64,(.+)$/.exec(url)
         return match ? [{ data: Buffer.from(match[2], 'base64'), mimeType: match[1] }] : []
       }) : []
       if (imageRequest.useReference && !references.length) throw new Error('Reference image unavailable. Reply to the image or attach it again.')
       const image = await generateImage(OPENAI_KEY, { prompt: imageRequest.prompt, images: references, signal: stopController.signal })
+      generatedImageFooter = formatImageFooter(image)
       throwIfStopped()
       const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'gpt-conversation-image-'))
       const file = path.join(dir, image.name)
       await fs.promises.writeFile(file, image.attachment, { mode: 0o600 })
       result.files = [...(result.files ?? []), file]
       result.temporaryFiles = [...(result.temporaryFiles ?? []), file]
-      result.reply = '🎨 Image attached.'
+      // Say what was drawn, not that something was. The conversational path
+      // resolves references ("make it blue") into a full prompt the asker
+      // never typed and would otherwise never see (Jeff 2026-09-10: the prompt
+      // belongs above the image).
+      result.reply = quotePrompt(imageRequest.prompt)
     }
 
     // Result is in hand — stop all "still working" indicators before rendering.
@@ -1787,7 +1942,7 @@ async function handleUserMessage(
     // transient bubble) and the typing heartbeat, alongside the spinner.
     if (placeholderTimer) { clearTimeout(placeholderTimer); placeholderTimer = null }
     if (typingInterval) { clearInterval(typingInterval); typingInterval = null }
-    await settleLiveUi(true)
+    await settleLiveUi(true, result.reply ?? '')
     if (stopController.signal.aborted) throw new CodexStoppedError(result.durationMs)
     temporaryResultFiles = result.temporaryFiles ?? []
     // Record completed usage for the cumulative stats ledger and live handoff.
@@ -1804,68 +1959,40 @@ async function handleUserMessage(
       }
     }
 
-
-    // codex can produce image files (e.g. a screenshot via its shell / the
-    // playwright MCP) but only references them by NAME or local path in the reply
-    // text — it has no Discord-attach hook like the API/MCP path does. So pull
-    // image references that resolve to a real file on disk, attach the real files,
-    // and strip the dead path/link from the text. (Jeff 2026-06-25)
-    //
-    // KEY: codex's cwd is its HOME (~), NOT gpt's process cwd (repos/gpt-bot), and
-    // the model frequently picks a BARE filename ("airbnb-listings.png") that
-    // playwright writes into codex's cwd. So an existsSync on the literal string
-    // fails (wrong cwd) and bare names aren't even absolute. resolveShot() tries
-    // the literal path, then ~/<name>, then a couple of known screenshot dirs.
+    // Attach the local files the reply names. gpt-bot could already send images
+    // it GENERATED (materializeGeneratedImages turns data: URLs into temp
+    // files), but had no way to attach a file it merely names — so a .md on
+    // disk went out as a path in prose, same blind spot as claude-bot
+    // (Jeff 2026-09-08). Images may be named bare and resolve against the
+    // screenshot dirs; documents need an explicit form and an absolute path,
+    // so ordinary prose about a filename is never uploaded.
     if (result.reply) {
-      // codex-chat runs codex from /tmp (see codex-chat.ts `cd /tmp && codex
-      // exec`), so a bare-filename screenshot lands in /tmp. Also check ~ (manual
-      // codex runs) and the MCP output dirs. /tmp first — it's the live path.
-      const CODEX_CWD = '/tmp'
-      // The Playwright MCP wrapper `cd`s into its output dir before exec, so a
-      // bare-name screenshot ("koyfin.jpg") resolves THERE, not /tmp. That dir
-      // was renamed playwright-mcp-output → computer-use on 2026-06-25; gpt-bot's
-      // lookup wasn't updated, so resolveShot() failed to find real screenshots
-      // and posted the raw path instead of the image (Jeff 2026-06-25). Honor
-      // the same COMPUTER_USE_OUTPUT_DIR / PLAYWRIGHT_OUTPUT_DIR knobs the wrapper
-      // uses, with the current dir first, and keep the legacy dirs for back-compat.
-      const MCP_OUT = process.env.COMPUTER_USE_OUTPUT_DIR
-        || process.env.PLAYWRIGHT_OUTPUT_DIR
-        || path.join(os.homedir(), '.cache', 'computer-use')
-      const SHOT_DIRS = [
-        CODEX_CWD,
-        MCP_OUT,
-        os.homedir(),
-        path.join(os.homedir(), '.cache', 'computer-use'),
-        path.join(os.homedir(), '.cache', 'playwright-mcp-output'),
-        path.join(os.homedir(), '.cache', 'gpt-mcp-images'),
-      ]
-      const resolveShot = (raw: string): string | null => {
-        // Try the literal path, then the basename under each known screenshot dir
-        // (covers both bare names and absolute paths that point at the wrong cwd).
-        const cands = [raw, ...SHOT_DIRS.map(d => path.join(d, path.basename(raw)))]
-        for (const c of cands) { try { if (fs.existsSync(c)) return c } catch {} }
-        return null
+      const scan = scanOutboundFiles(result.reply, {
+        shotDirs: [
+          '/tmp',
+          process.env.COMPUTER_USE_OUTPUT_DIR
+            || process.env.PLAYWRIGHT_OUTPUT_DIR
+            || path.join(os.homedir(), '.cache', 'computer-use'),
+          os.homedir(),
+          path.join(os.homedir(), '.cache', 'computer-use'),
+          path.join(os.homedir(), '.cache', 'playwright-mcp-output'),
+          path.join(os.homedir(), '.cache', 'agent-images'),
+        ],
+        isFile: (f: string) => { try { return fs.statSync(f).isFile() } catch { return false } },
+        sizeOf: (f: string) => { try { return fs.statSync(f).size } catch { return 0 } },
+        join: path.join,
+        basename: path.basename,
+        isAbsolute: path.isAbsolute,
+      })
+      for (const skip of scan.skipped) {
+        console.error(`[attach] refused ${skip.path}: ${skip.reason}`)
       }
-      const shots: string[] = []
-      const grab = (m: string, p: string): string => {
-        const real = resolveShot(p)
-        if (real) { shots.push(real); return '' }
-        return m
-      }
-      const txt = result.reply
-        // markdown image/link: ![alt](path) or [text](path)
-        .replace(/!?\[[^\]]*\]\(([^)\s]+\.(?:png|jpe?g|gif|webp))\)/gi, (m, p) => grab(m, p))
-        // backtick-wrapped path/name: `airbnb-listings.png` or `/abs/x.jpg`
-        .replace(/`([^`\s]+\.(?:png|jpe?g|gif|webp))`/gi, (m, p) => grab(m, p))
-        // bare absolute path or bare filename token
-        .replace(/(?<![\w/])((?:\/[^\s)]+|[\w.-]+)\.(?:png|jpe?g|gif|webp))(?![\w])/gi, (m, p) => grab(m, p))
-      if (shots.length) {
-        // De-dupe (the same file can match multiple patterns).
-        const uniq = [...new Set(shots)]
-        result.reply = txt.replace(/[ \t]+$/gm, '').replace(/\n{3,}/g, '\n\n').trim()
-        result.files = [...(result.files ?? []), ...uniq]
+      if (scan.files.length) {
+        result.reply = scan.reply
+        result.files = [...(result.files ?? []), ...scan.files]
       }
     }
+
 
     if (result.react) {
       // Outbound react validator: the model occasionally emits custom Discord
@@ -2052,7 +2179,10 @@ async function handleUserMessage(
     // and so the visual lands right under the text. Discord caps 10 files/msg.
     if (result.files?.length && message.channel.isSendable()) {
       try {
-        bottomContentMessage = await message.channel.send({ files: result.files.slice(0, 10) })
+        bottomContentMessage = await message.channel.send({
+          content: generatedImageFooter || undefined,
+          files: result.files.slice(0, 10),
+        })
       } catch (e) {
         console.error('screenshot attach failed:', e instanceof Error ? e.message : e)
       }
@@ -2117,15 +2247,16 @@ async function handleUserMessage(
       } catch {}
       return
     }
+    const providerNotice = providerFailureNotice(e)
     const isRejected = e instanceof OpenAIRequestRejected
     if (isRejected && e.reason === 'content_policy') {
       await lifecycle.transition('blocked')
-    } else if (isRejected) {
+    } else if (isRejected || providerNotice) {
       await lifecycle.transition('denied')
     } else {
       await lifecycle.transition('errored')
     }
-    const errMsg = isRejected ? `⚠️ ${e.reason}` : `❌ error: ${e?.message ?? String(e)}`
+    const errMsg = providerNotice ?? (isRejected ? `⚠️ ${e.reason}` : `❌ error: ${e?.message ?? String(e)}`)
     await settleLiveUi()
     console.error('respond failed:', e)
     await deleteLiveTrace()
@@ -2149,6 +2280,7 @@ async function handleUserMessage(
           await errorMessage.edit({ content: errMsg, components: [failureActions(errorMessage.id)] })
         }
       }
+      await errorMessage?.react('🔁').catch(() => {})
     } catch {}
   } finally {
     await finishPostTurnRollover()
@@ -2188,8 +2320,28 @@ async function runChannelTurn(
   target: Message | null,
   contentOverride?: string,
   actor?: TrustedRelay,
+  expansion = false,
+  principal?: { userId: string, userName: string },
 ): Promise<void> {
   const cid = message.channel.id
+  // Charge every contribution before it can enter either the steering inbox or
+  // FIFO. This keeps mixed-principal batches from charging only their carrier,
+  // and an exhausted principal cannot smuggle work into somebody else's turn.
+  const admissionUserId = principal?.userId ?? actor?.userId ?? message.author.id
+  const admission = turnAdmission.reserve(admissionUserId)
+  if (!admission.allowed) {
+    logTurnLifecycle({
+      event: 'turn_rejected', channelId: cid, stopReason: `daily_${admission.reason}_limit`,
+    })
+    await replyOrSend(
+      message,
+      admission.reason === 'principal'
+        ? '⚠️ Your daily bot-turn safety limit has been reached. It resets at midnight Pacific.'
+        : '⚠️ The bot-wide daily safety limit has been reached. It resets at midnight Pacific.',
+      !actor,
+    )
+    return
+  }
   if (channelTurns.isRunning(cid) && activeTurns.isActive(cid)) {
     const replyText = formatReplyContext(await resolveReplyContext(message))
     const pinText = formatPinContext(await resolvePinContext(message))
@@ -2199,7 +2351,7 @@ async function runChannelTurn(
       .filter(Boolean).join('\n\n')
     if (await activeTurns.steer(
       cid,
-      frameLiveSteerMessage(`[${actor?.userName ?? message.author.username}] ${text}`),
+      frameLiveSteerMessage(`[${principal?.userName ?? actor?.userName ?? message.author.username}] ${text}`),
       () => activeLifecycleTrackers.get(cid)?.moveTo(message),
     )) {
       logTurnLifecycle({
@@ -2209,11 +2361,29 @@ async function runChannelTurn(
     }
   }
   const steered = channelTurns.isRunning(cid)
-  const outcome = await channelTurns.submit(cid, { message, target, contentOverride, actor, steered })
+  const outcome = await channelTurns.submit(cid, {
+    message,
+    target,
+    contentOverride,
+    actor,
+    principal,
+    expansion,
+    steered,
+  })
   if (outcome === 'queued') {
     logTurnLifecycle({
       event: 'turn_queued', channelId: cid, queueDepth: channelTurns.queueDepth(cid),
     })
+  } else if (outcome.startsWith('rejected_')) {
+    logTurnLifecycle({
+      event: 'turn_rejected', channelId: cid, queueDepth: channelTurns.queueDepth(cid),
+      stopReason: outcome,
+    })
+    await replyOrSend(
+      message,
+      '⚠️ Too many bot turns are already running or queued. Try again after one finishes.',
+      !actor,
+    )
   }
 }
 
@@ -2363,6 +2533,15 @@ client.on('messageReactionAdd', async (reaction, user) => {
   await handleReaction(reaction, user, {
     client,
     access,
+    retryFailure: async (msg, reactor) => {
+      if (!failedTurns.get(msg.id)) return false
+      const notice = await retryFailure(msg.id, msg, { userId: reactor.id, userName: reactor.username })
+      if (notice && !failedTurns.get(msg.id)?.consumed) {
+        await msg.reply({ content: notice, allowedMentions: { repliedUser: false } }).catch(() => {})
+        await reaction.users.remove(reactor.id).catch(() => {})
+      }
+      return true
+    },
     buildContext: (msg, reactor) => ({
       message: msg,
       reactor,
@@ -2371,7 +2550,14 @@ client.on('messageReactionAdd', async (reaction, user) => {
       persona,
       pendingEdits,
       pinnedFacts,
-      rerunHandler: handleUserMessage
+      rerunHandler: (original, target, expansion) => runChannelTurn(
+        original,
+        target,
+        undefined,
+        undefined,
+        expansion,
+        { userId: reactor.id, userName: reactor.username },
+      ),
     })
   })
 })

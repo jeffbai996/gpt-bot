@@ -6,20 +6,11 @@ import { preserveAndDropSession } from '../src/session-rollover.ts'
 test('rollover drops the session only after a durable summary is written', async () => {
   const events: string[] = []
   const result = await preserveAndDropSession({
-    summarizer: {
-      runForChannel: async channelId => {
-        events.push(`summarize:${channelId}`)
-        return { messageCount: 4 }
-      },
-    },
+    summarizer: { runForChannel: async channelId => { events.push(`summarize:${channelId}`); return { messageCount: 4 } } },
     channelId: 'channel-1',
-    dropSession: channelId => {
-      events.push(`drop:${channelId}`)
-      return true
-    },
+    dropSession: channelId => { events.push(`drop:${channelId}`); return true },
     timeoutMs: 1_000,
   })
-
   assert.deepEqual(result, { status: 'compacted', messageCount: 4, droppedSession: true })
   assert.deepEqual(events, ['summarize:channel-1', 'drop:channel-1'])
 })
@@ -32,7 +23,6 @@ test('rollover preserves the session when summarization fails', async () => {
     dropSession: () => { dropped = true; return true },
     timeoutMs: 1_000,
   })
-
   assert.equal(result.status, 'failed')
   assert.equal(dropped, false)
 })

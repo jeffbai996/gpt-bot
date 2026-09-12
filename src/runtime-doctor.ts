@@ -78,10 +78,7 @@ function normalizedCommand(value: unknown): unknown {
   return out
 }
 
-export function slashCommandMatches(
-  expected: unknown,
-  remote: unknown[],
-): boolean {
+export function slashCommandMatches(expected: unknown, remote: unknown[]): boolean {
   const expectedName = expected && typeof expected === 'object'
     ? (expected as Record<string, unknown>).name
     : undefined
@@ -97,10 +94,7 @@ export function slashCommandMatches(
   return JSON.stringify(normalizedActual) === JSON.stringify(normalizedExpected)
 }
 
-export async function appendRuntimeChecks(
-  checks: DoctorCheck[],
-  deps: DoctorRuntimeDeps,
-): Promise<void> {
+export async function appendRuntimeChecks(checks: DoctorCheck[], deps: DoctorRuntimeDeps): Promise<void> {
   const now = deps.now?.() ?? Date.now()
   if ('memory' in deps) {
     const memory = typeof deps.memory === 'function' ? deps.memory() : deps.memory
@@ -110,22 +104,15 @@ export async function appendRuntimeChecks(
     } else {
       const latest = ageDetail(memory.latestMessageAt, now)
       const maxAge = deps.ingestionMaxAgeMs ?? 24 * 60 * 60 * 1_000
-      checks.push({
-        name: 'memory ingestion',
-        ok: memory.messageCount > 0 && latest.ok && latest.ageMs <= maxAge,
-        detail: `${memory.messageCount} messages · latest ${latest.text}`,
-      })
+      checks.push({ name: 'memory ingestion', ok: memory.messageCount > 0 && latest.ok && latest.ageMs <= maxAge, detail: `${memory.messageCount} messages · latest ${latest.text}` })
       const summaryAge = ageDetail(memory.latestSummaryAt, now)
       const due = memory.maxPendingMessages >= memory.summarizationThreshold
       checks.push({
-        name: 'summary state',
-        ok: !due,
-        detail: `${memory.summaryCount} summaries · latest ${summaryAge.text} · `
-          + `${memory.maxPendingMessages}/${memory.summarizationThreshold} pending max/channel`,
+        name: 'summary state', ok: !due,
+        detail: `${memory.summaryCount} summaries · latest ${summaryAge.text} · ${memory.maxPendingMessages}/${memory.summarizationThreshold} pending max/channel`,
       })
     }
   }
-
   if (deps.admission) {
     const admission = deps.admission()
     const waitSeconds = Math.ceil(admission.oldestWaitMs / 1_000)
@@ -137,46 +124,28 @@ export async function appendRuntimeChecks(
         + `${admission.pausedForMemory ? ' · MEMORY PAUSED' : ''}`,
     })
   }
-
   if (deps.backgroundModels) {
     try {
       const models = await deps.backgroundModels.list()
       const available = new Set(models)
       checks.push({ name: 'model endpoint', ok: true, detail: `${models.length} models reachable` })
-      checks.push({
-        name: 'summary model',
-        ok: available.has(deps.backgroundModels.summarizerModel),
-        detail: `${deps.backgroundModels.summarizerModel} · ${available.has(deps.backgroundModels.summarizerModel) ? 'available' : 'MISSING'}`,
-      })
-      checks.push({
-        name: 'embedding model',
-        ok: available.has(deps.backgroundModels.embeddingModel),
-        detail: `${deps.backgroundModels.embeddingModel} · ${available.has(deps.backgroundModels.embeddingModel) ? 'available' : 'MISSING'}`,
-      })
+      checks.push({ name: 'summary model', ok: available.has(deps.backgroundModels.summarizerModel), detail: `${deps.backgroundModels.summarizerModel} · ${available.has(deps.backgroundModels.summarizerModel) ? 'available' : 'MISSING'}` })
+      checks.push({ name: 'embedding model', ok: available.has(deps.backgroundModels.embeddingModel), detail: `${deps.backgroundModels.embeddingModel} · ${available.has(deps.backgroundModels.embeddingModel) ? 'available' : 'MISSING'}` })
     } catch (error: any) {
       checks.push({ name: 'model endpoint', ok: false, detail: error?.message ?? String(error) })
       checks.push({ name: 'summary model', ok: false, detail: `${deps.backgroundModels.summarizerModel} · unchecked` })
       checks.push({ name: 'embedding model', ok: false, detail: `${deps.backgroundModels.embeddingModel} · unchecked` })
     }
   }
-
   if (deps.deployment) {
     try {
       const current = await deps.deployment.current()
-      const ok = current.revision === deps.deployment.boot.revision
-        && current.fingerprint === deps.deployment.boot.fingerprint
-      checks.push({
-        name: 'deployed source',
-        ok,
-        detail: ok
-          ? `${current.revision.slice(0, 8)} · ${current.fingerprint}`
-          : `boot ${deps.deployment.boot.revision.slice(0, 8)}+${deps.deployment.boot.fingerprint} · current ${current.revision.slice(0, 8)}+${current.fingerprint}`,
-      })
+      const ok = current.revision === deps.deployment.boot.revision && current.fingerprint === deps.deployment.boot.fingerprint
+      checks.push({ name: 'deployed source', ok, detail: ok ? `${current.revision.slice(0, 8)} · ${current.fingerprint}` : `boot ${deps.deployment.boot.revision.slice(0, 8)}+${deps.deployment.boot.fingerprint} · current ${current.revision.slice(0, 8)}+${current.fingerprint}` })
     } catch (error: any) {
       checks.push({ name: 'deployed source', ok: false, detail: error?.message ?? String(error) })
     }
   }
-
   if (deps.slashCommands) {
     try {
       const remote = await deps.slashCommands.fetchRemote()
@@ -192,23 +161,15 @@ const SOURCE_PATHS = ['src', 'tests', 'package.json', 'package-lock.json', '.env
 
 /** Fingerprint the exact source snapshot used by tsx without reading runtime secrets. */
 export function captureSourceState(repoDir = process.cwd()): SourceState {
-  const git = (args: string[]) => execFileSync('git', args, {
-    cwd: repoDir,
-    encoding: 'utf8',
-    maxBuffer: 32 * 1024 * 1024,
-  })
+  const git = (args: string[]) => execFileSync('git', args, { cwd: repoDir, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 })
   const revision = git(['rev-parse', 'HEAD']).trim()
   const hash = createHash('sha256')
   const diff = git(['diff', '--binary', 'HEAD', '--', ...SOURCE_PATHS])
   hash.update(diff)
-  const untracked = git(['ls-files', '--others', '--exclude-standard', '--', ...SOURCE_PATHS])
-    .split('\n').filter(Boolean).sort()
+  const untracked = git(['ls-files', '--others', '--exclude-standard', '--', ...SOURCE_PATHS]).split('\n').filter(Boolean).sort()
   for (const relative of untracked) {
     hash.update(relative)
     hash.update(fs.readFileSync(path.join(repoDir, relative)))
   }
-  return {
-    revision,
-    fingerprint: diff || untracked.length ? `dirty:${hash.digest('hex').slice(0, 12)}` : 'clean',
-  }
+  return { revision, fingerprint: diff || untracked.length ? `dirty:${hash.digest('hex').slice(0, 12)}` : 'clean' }
 }

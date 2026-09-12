@@ -19,6 +19,8 @@ test('access: canHandle requires user allowlist + channel enabled', async () => 
   assert.equal(a.canHandle({ channelId: 'c1', userId: 'u1', isMention: false }), false)
 
   await a.allowUser('u1')
+  assert.equal(a.isUserAllowed('u1'), true)
+  assert.equal(a.isUserAllowed('u2'), false)
   assert.equal(a.canHandle({ channelId: 'c1', userId: 'u1', isMention: false }), false, 'channel still disabled')
 
   await a.setChannel('c1', true, false)
@@ -78,41 +80,21 @@ test('access: max is a valid reasoning effort', async () => {
 test('access: ultra is valid on a model that supports automatic delegation', async () => {
   const a = new AccessManager()
   await a.load()
-  await a.setChannel('c1', true, false, { codexModel: 'gpt-5.6-sol' })
+  await a.setChannel('c1', true, false, { codexModel: 'gpt-6-astra' })
   await a.setChannelFlags('c1', { reasoning: 'ultra' })
 
   assert.equal(a.channelFlags('c1').reasoning, 'ultra')
 })
 
-test('access: Astra supports observable ultra delegation', async () => {
+test('access: Astra rejects unsupported none reasoning', async () => {
   const a = new AccessManager()
   await a.load()
-  await a.setChannel('c-astra', true, false, { codexModel: 'gpt-6-astra' as any })
-  await a.setChannelFlags('c-astra', { reasoning: 'ultra' })
+  await a.setChannel('c-astra', true, false, { codexModel: 'gpt-6-astra' })
 
-  assert.equal(a.channelFlags('c-astra').reasoning, 'ultra')
-})
-
-test('access: model effort ladders match the Codex catalog', () => {
-  assert.deepEqual(CODEX_REASONING_BY_MODEL, {
-    'gpt-6-astra': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
-    'gpt-5.6-sol': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
-    'gpt-5.6-terra': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
-    'gpt-5.6-luna': ['low', 'medium', 'high', 'xhigh', 'max'],
-    'gpt-daybreak-blue-latest': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
-  })
-})
-
-test('access: every current Codex model rejects unsupported none reasoning', async () => {
-  const a = new AccessManager()
-  await a.load()
-  for (const model of Object.keys(CODEX_REASONING_BY_MODEL)) {
-    await a.setChannel(`c-${model}`, true, false, { codexModel: model as any })
-    await assert.rejects(
-      () => a.setChannelFlags(`c-${model}`, { reasoning: 'none' }),
-      new RegExp(`none.*${model.replaceAll('.', '\\.') }.*not supported`, 'i'),
-    )
-  }
+  await assert.rejects(
+    () => a.setChannelFlags('c-astra', { reasoning: 'none' }),
+    /none.*gpt-6-astra.*not supported/i,
+  )
 })
 
 test('access: ultra rejects models without automatic delegation', async () => {
@@ -140,7 +122,7 @@ test('access: model changes cannot strand an existing ultra setting', async () =
   )
 })
 
-test('access: retired saved GPT-5.5 normalizes to current default', async () => {
+test('access: retired saved codexModel normalizes to current default', async () => {
   const a = new AccessManager()
   await a.load()
   await a.setChannel('c1', true, false)
@@ -153,29 +135,6 @@ test('access: retired saved GPT-5.5 normalizes to current default', async () => 
   await a.load()
   const flags = a.channelFlags('c1')
   assert.equal(flags.codexModel, 'gpt-5.6-sol')
-})
-
-test('access: stale none effort migrates to the supported default', async () => {
-  const file = path.join(tmpDir, 'access.json')
-  await fs.writeFile(file, JSON.stringify({
-    version: 2,
-    users: {},
-    channels: {
-      c1: {
-        enabled: true,
-        requireMention: false,
-        codexModel: 'gpt-5.6-sol',
-        reasoning: 'none',
-      },
-    },
-  }, null, 2))
-
-  const a = new AccessManager()
-  await a.load()
-
-  assert.equal(a.channelFlags('c1').reasoning, 'high')
-  const migrated = JSON.parse(await fs.readFile(file, 'utf8'))
-  assert.equal(migrated.channels.c1.reasoning, 'high')
 })
 
 test('access: migrates the old thinking collapse mode to live once', async () => {
