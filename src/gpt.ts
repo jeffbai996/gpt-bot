@@ -1060,6 +1060,8 @@ async function handleUserMessage(
   let narrationMessageId: string | null = null
   let liveDetail = ''
   let liveFooter = ''
+  let liveActivity = 'thinking'
+  const runningTools: string[] = []
   let liveCompacting = false
   let spinnerGlyph = '✻'
   let spinnerDots = '…'
@@ -1292,7 +1294,7 @@ async function handleUserMessage(
     }, delay)
   }
 
-  const queueLiveText = (raw: string, rememberProgress: boolean, footer = ''): void => {
+  const queueLiveText = (raw: string, rememberProgress: boolean, footer = liveFooter): void => {
     if (liveUiClosed) return
     if (rememberProgress) {
       liveProgressHoldUntil = liveProgressHoldForReplacement({
@@ -1571,6 +1573,8 @@ async function handleUserMessage(
       return
     }
     if (event.type === 'tool_start') {
+      runningTools.push(event.name)
+      liveActivity = `running ${runningTools.join(', ')}`
       void lifecycle.toolStarted()
       if (flags.trace !== 'off') {
         liveToolRows.push({
@@ -1585,7 +1589,12 @@ async function handleUserMessage(
       return
     }
     if (event.type === 'tool_end') {
-      if (!event.update) void lifecycle.toolEnded()
+      if (!event.update) {
+        const index = runningTools.indexOf(event.name)
+        if (index >= 0) runningTools.splice(index, 1)
+        liveActivity = runningTools.length ? `running ${runningTools.join(', ')}` : 'thinking'
+        void lifecycle.toolEnded()
+      }
       if (flags.trace !== 'off') {
         const row = findLiveToolRow(event.name, event.args)
         const target = row ?? {
@@ -1612,10 +1621,12 @@ async function handleUserMessage(
       return
     }
     if (event.type === 'progress') {
+      liveActivity = 'writing'
       if (narrationHistory.accept(event.reply)) queueLiveText(event.reply, true)
       return
     }
     if (event.type === 'reasoning_progress') {
+      liveActivity = 'thinking'
       void lifecycle.reasoning()
       const reasoningIsVisible = flags.thinking !== 'off'
       if (flags.thinking === 'on' || flags.thinking === 'collapse') {
@@ -1626,7 +1637,6 @@ async function handleUserMessage(
       if (shouldReplaceNarrationWithReasoning(reasoningIsVisible)) {
         lastProgressText = ''
         liveDetail = ''
-        liveFooter = ''
         queueLiveRender()
       }
       return
@@ -1646,7 +1656,7 @@ async function handleUserMessage(
       const visual = heartbeatVisual(heartbeatFrame, heartbeatVerb)
       heartbeatFrame++
       heartbeatVerb = visual.verb
-      const footer = formatHeartbeatFooter(event.elapsedMs, event.idleMs, visual.verb, visual.glyph)
+      const footer = formatHeartbeatFooter(event.elapsedMs, event.idleMs, visual.verb, visual.glyph, liveCompacting ? 'compacting' : runningTools.length ? `running ${runningTools.join(', ')}` : liveActivity)
       queueLiveText(base, false, footer)
       return
     }

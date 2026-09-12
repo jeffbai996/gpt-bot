@@ -36,13 +36,13 @@ test('keeps the verb stable for four frames before advancing it', () => {
   assert.deepEqual(heartbeatVisual(4, 'cogitating'), { glyph: '✷', verb: 'pondering' })
 })
 
-test('delays the heartbeat row until actual activity has been idle for 60 seconds', () => {
-  assert.equal(shouldRenderHeartbeat(120_000, 59_999, 60_000), false)
+test('delays the heartbeat row until the turn has run for 60 seconds', () => {
+  assert.equal(shouldRenderHeartbeat(59_999, 0, 60_000), false)
   assert.equal(shouldRenderHeartbeat(120_000, 60_000, 60_000), true)
 })
 
-test('turn age alone never triggers a heartbeat during active work', () => {
-  assert.equal(shouldRenderHeartbeat(600_000, 5_000, 60_000), false)
+test('long active turns retain a heartbeat', () => {
+  assert.equal(shouldRenderHeartbeat(600_000, 5_000, 60_000), true)
 })
 
 test('renders heartbeat status in the same small gray style as token counters', () => {
@@ -260,4 +260,9 @@ test('clips progress before the footer instead of dropping the heartbeat', () =>
   assert.ok(message.length <= 60)
   assert.match(message, /^💭 ✻ \*\*thinking…\*\*/)
   assert.match(message, /…\n\n```\nstill working\n```$/)
+})
+
+ test('activity footer shows tools and elapsed time, and marks silent periods', () => {
+  assert.equal(formatHeartbeatFooter(90_000, 500, 'pondering', '✻', 'running Bash'), '-# ` ✻ running Bash · 1m 30s elapsed `')
+  assert.match(formatHeartbeatFooter(180_000, 125_000, 'pondering', '✻', 'thinking'), /waiting · no output for 2m 5s/)
 })

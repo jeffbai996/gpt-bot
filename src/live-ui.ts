@@ -93,11 +93,11 @@ export function heartbeatVisual(frame: number, verb: string): { glyph: string; v
 }
 
 export function shouldRenderHeartbeat(
-  _elapsedMs: number,
-  idleMs: number,
+  elapsedMs: number,
+  _idleMs: number,
   delayMs: number,
 ): boolean {
-  return idleMs >= delayMs
+  return elapsedMs >= delayMs
 }
 
 function formatDuration(ms: number): string {
@@ -109,10 +109,17 @@ function formatDuration(ms: number): string {
 
 export function formatHeartbeatFooter(
   elapsedMs: number,
-  _idleMs: number,
+  idleMs: number,
   verb: string,
   glyph: string = HEARTBEAT_GLYPHS[0],
+  activity?: string,
 ): string {
+  if (activity) {
+    const state = idleMs >= 60_000
+      ? `waiting · no output for ${formatDuration(idleMs)}`
+      : activity
+    return `-# \` ${glyph} ${state} · ${formatDuration(elapsedMs)} elapsed \``
+  }
   return `-# \` ${glyph} still ${verb} · ${formatDuration(elapsedMs)} \``
 }
 

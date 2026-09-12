@@ -2,7 +2,7 @@ import { chunk } from './chunk.ts'
 import { redactTraceSensitiveData } from './tool-trace.ts'
 
 export function narrationBlocks(text: string): string[] {
-  return chunk(redactTraceSensitiveData(text), 1900)
+  return chunk(redactTraceSensitiveData(text), 1896).map(block => `>>> ${block}`)
 }
 
 /** The render owner serializes advance/finish with Discord edits. */
