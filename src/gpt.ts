@@ -40,6 +40,7 @@ import {
   completionContinuationPrompt,
   isNonTerminalActionReply,
   MAX_COMPLETION_CONTINUATIONS,
+  mergeCompletionReplies,
   NonTerminalCompletionError,
 } from './completion-gate.ts'
 import {
@@ -1677,9 +1678,10 @@ async function handleUserMessage(
 
         // Codex CLI's exit status only proves the child finished. If its
         // authoritative final still declares ongoing work, resume the exact
-        // session instead of publishing a progress update as task completion.
+        // session and preserve every reply for the eventual Discord message.
         let completionContinuations = 0
         let totalDurationMs = result.durationMs
+        const completionReplies = [result.reply ?? '']
         const allToolCalls = [...result.toolCalls]
         const allFiles = [...(result.files ?? [])]
         const allTemporaryFiles = [...(result.temporaryFiles ?? [])]
@@ -1704,12 +1706,14 @@ async function handleUserMessage(
           allToolCalls.push(...retry.toolCalls)
           allFiles.push(...(retry.files ?? []))
           allTemporaryFiles.push(...(retry.temporaryFiles ?? []))
+          completionReplies.push(retry.reply ?? '')
           retry.durationMs = totalDurationMs
           retry.toolCalls = [...allToolCalls]
           retry.files = [...new Set(allFiles)]
           retry.temporaryFiles = [...new Set(allTemporaryFiles)]
           result = retry
         }
+        result.reply = mergeCompletionReplies(completionReplies)
         if (result.threadId) channelSessions.set(channelId, result.threadId)
         // App-server usage is already the sum of every model roundtrip in this
         // turn. Only legacy resumed CLI sessions report a cumulative snapshot

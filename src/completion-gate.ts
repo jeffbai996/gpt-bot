@@ -7,7 +7,7 @@ export const MAX_COMPLETION_CONTINUATIONS = 2
 const ACTIVE_VERB = 'auditing|building|checking|changing|deploying|designing|diagnosing|fixing|implementing|inspecting|investigating|mapping|patching|refining|running|starting|testing|tracing|updating|verifying|working'
 const FUTURE_VERB = 'audit|build|check|change|continue|deploy|design|diagnose|do|fix|implement|inspect|investigate|map|patch|refine|run|start|test|trace|update|verify|work'
 const ONGOING_ACTION = new RegExp([
-  String.raw`\b(?:on it|working on it)\b`,
+  String.raw`(?:^|\n)\s*(?:on it|working on it)[.!…]?\s*(?=$|\n)`,
   String.raw`\b(?:i(?:'m| am)|we(?:'re| are))\s+(?:(?:still|currently|now|actively)\s+)?(?:${ACTIVE_VERB})\b`,
   String.raw`\b(?:next\s+)?i(?:'ll| will)\s+(?:${FUTURE_VERB})\b`,
   String.raw`\b(?:next\s+)?i(?:'m| am)\s+going to\s+(?:${FUTURE_VERB})\b`,
@@ -15,6 +15,13 @@ const ONGOING_ACTION = new RegExp([
 
 export function isNonTerminalActionReply(reply: string): boolean {
   return ONGOING_ACTION.test(reply.trim())
+}
+
+export function mergeCompletionReplies(replies: string[]): string {
+  return replies
+    .map(reply => reply.trim())
+    .filter(Boolean)
+    .join('\n\n')
 }
 
 export function completionContinuationPrompt(attempt: number): string {
