@@ -92,3 +92,10 @@ test('spinner-only redraws do not perpetually renew the reading dwell', () => {
     },
   )
 })
+
+test('rolling live replacement preserves the current reading deadline', () => {
+  assert.equal(liveProgressHoldForReplacement({
+    text: 'new narration', currentText: 'old narration', holdUntil: 30000,
+    preserveHold: true,
+  }), 30000)
+})

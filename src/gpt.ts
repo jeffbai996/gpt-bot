@@ -1095,12 +1095,12 @@ async function handleUserMessage(
     if (!await awaitBounded(pending)) abandonWedgedPlaceholder()
   }
   const settleLiveUi = async (respectProgressDwell = false, finalReply = '') => {
+    liveUiClosed = true
+    await stopThinkingAnim()
     if (respectProgressDwell) {
       const remaining = liveProgressHoldUntil - Date.now()
       if (remaining > 0) await sleep(remaining)
     }
-    liveUiClosed = true
-    await stopThinkingAnim()
     await narrationHistory.finish(retireNarration, finalReply).catch(e => console.error('[narration] final demotion failed:', e))
   }
   let interruptionRendered = false
@@ -1234,16 +1234,22 @@ async function handleUserMessage(
     if (liveUiClosed) return
     const task = (async () => {
       if (liveUiClosed) return
+      // A timer queued before the last edit finished may now be too early.
+      if (flags.thinking === 'live' && Date.now() < liveProgressHoldUntil) {
+        liveRenderDirty = true
+        return
+      }
       await narrationHistory.advance(retireNarration)
       await postPlaceholder()
       if (!workMessage || liveUiClosed) return
       const accumulatesReasoning = flags.thinking === 'on' || flags.thinking === 'collapse'
+      const renderedProgress = narrationHistory.current || liveDetail
       const display = formatLiveWorkMessage({
         effortLabel,
         activity: liveCompacting ? 'compacting' : 'thinking',
         headline: accumulatesReasoning ? '' : liveHeadline,
         reasoningTrace: accumulatesReasoning ? liveReasoningTrace : [],
-        detail: narrationHistory.current || liveDetail,
+        detail: renderedProgress,
         footer: liveFooter,
         spinnerGlyph,
         spinnerDots,
@@ -1251,19 +1257,21 @@ async function handleUserMessage(
       if (display === lastEditedText || liveUiClosed) return
       lastEditedText = display
       lastLiveRenderAt = Date.now()
-      const dwell = advanceLiveProgressDwell({
-        text: liveDetail,
-        lastText: lastRenderedProgressText,
-        renderedAt: lastLiveRenderAt,
-        holdUntil: liveProgressHoldUntil,
-      })
-      lastRenderedProgressText = dwell.lastText
-      liveProgressHoldUntil = dwell.holdUntil
       const target = workMessage
       if (narrationHistory.current) narrationMessageId = target.id
       if (!await awaitBounded(target.edit(display)) && workMessage === target) {
         abandonWedgedPlaceholder()
+        return
       }
+      // Start reading time only once Discord has accepted the visible edit.
+      const dwell = advanceLiveProgressDwell({
+        text: renderedProgress,
+        lastText: lastRenderedProgressText,
+        renderedAt: Date.now(),
+        holdUntil: liveProgressHoldUntil,
+      })
+      lastRenderedProgressText = dwell.lastText
+      liveProgressHoldUntil = dwell.holdUntil
     })().catch(e => { console.error('[live-ui] progress edit failed:', e) })
     liveEditTask = task
     await task
@@ -1302,6 +1310,7 @@ async function handleUserMessage(
       liveProgressHoldUntil = liveProgressHoldForReplacement({
         text: raw,
         currentText: liveDetail,
+        preserveHold: flags.thinking === 'live',
         holdUntil: liveProgressHoldUntil,
       })
     }
@@ -1395,7 +1404,7 @@ async function handleUserMessage(
       if (liveEditTask) await liveEditTask.catch(() => {})
       const previous = workMessage
       if (!previous || liveUiClosed) return
-      const content = previous.content || lastEditedText || `💭 ✻ **${effortLabel}…**`
+      const content = lastEditedText || previous.content || `💭 ✻ **${effortLabel}…**`
       const replacement = await traceChannel.send(content).catch(() => null)
       if (!replacement || liveUiClosed || workMessage !== previous) {
         if (replacement) await replacement.delete().catch(() => {})

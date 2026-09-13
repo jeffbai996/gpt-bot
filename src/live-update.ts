@@ -35,12 +35,14 @@ export function liveProgressDwellMs(
   )
 }
 
-/** A newer narration may replace the current one without waiting for its dwell. */
+/** Retained history can advance immediately; rolling text needs reading time. */
 export function liveProgressHoldForReplacement(input: {
   text: string
   currentText: string
+  preserveHold?: boolean
   holdUntil: number
 }): number {
+  if (input.preserveHold) return input.holdUntil
   const next = input.text.trim()
   return next && next !== input.currentText ? 0 : input.holdUntil
 }
