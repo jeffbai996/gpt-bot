@@ -428,11 +428,16 @@ function alertTranscriptionFallback(name: string, error: unknown): void {
   const extra = alsoSuppressed
     ? ` (+${alsoSuppressed} more since the last alert)`
     : ''
+  // House style for this channel: emoji + bold title + source tag, detail fenced.
   const text =
-    `⚠️ **gpt: voice note fell back to the metered OpenAI API**${extra}\n` +
-    `Local whisper at \`${TRANSCRIBE_URL}\` did not answer for \`${name}\`: ${reason}\n` +
-    'Transcription still worked and is now being billed. ' +
-    'Check `systemctl --user status whisper-server`.'
+    `⚠️ **voice note billed to the OpenAI API**${extra} \u00b7 \`gpt whisper-fallback\`\n` +
+    '```\n' +
+    `local whisper ${TRANSCRIBE_URL} did not answer\n` +
+    `file: ${name}\n` +
+    `error: ${reason}\n` +
+    'the transcript still arrived — it is just being paid for\n' +
+    'check: systemctl --user status whisper-server\n' +
+    '```'
   // Fire and forget: a failed page must never take down the turn that raised it.
   void (async () => {
     try {
