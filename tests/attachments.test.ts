@@ -229,3 +229,70 @@ test('archive extraction is isolated and rejects an oversized expansion', async 
   const bomb = Buffer.from(gzipSync(new Uint8Array(9 * 1024 * 1024)))
   await assert.rejects(() => extractLocalText(bomb, 'bomb.gz'), /expanded size cap exceeded/)
 })
+
+test('a failing local whisper service falls back to the metered API', async () => {
+  const previousFetch = globalThis.fetch
+  globalThis.fetch = async () => new Response(Buffer.from('opus-audio'), { status: 200 })
+  let fallbackCalls = 0
+  const localDown = {
+    audio: { transcriptions: { create: async () => {
+      throw new Error('ECONNREFUSED 172.17.0.1:8899')
+    } } },
+  } as any
+  const meteredApi = {
+    audio: { transcriptions: { create: async () => {
+      fallbackCalls += 1
+      return { text: 'heard it anyway' }
+    } } },
+  } as any
+  try {
+    const out = await processAttachments(
+      [{ url: 'https://example.com/voice.ogg', name: 'voice.ogg', size: 1024, contentType: 'audio/ogg' }],
+      localDown, 'large-v3-turbo', { client: meteredApi, model: 'whisper-1' },
+    )
+    assert.equal(fallbackCalls, 1)
+    assert.deepEqual(out.skipped, [])
+    assert.match(out.text, /heard it anyway/)
+  } finally {
+    globalThis.fetch = previousFetch
+  }
+})
+
+test('the local service is used alone when no fallback is configured', async () => {
+  const previousFetch = globalThis.fetch
+  globalThis.fetch = async () => new Response(Buffer.from('opus-audio'), { status: 200 })
+  let model = ''
+  const local = {
+    audio: { transcriptions: { create: async ({ model: m }: any) => {
+      model = m
+      return { text: 'local only' }
+    } } },
+  } as any
+  try {
+    const out = await processAttachments(
+      [{ url: 'https://example.com/voice.ogg', name: 'voice.ogg', size: 1024, contentType: 'audio/ogg' }],
+      local, 'large-v3-turbo',
+    )
+    assert.equal(model, 'large-v3-turbo')
+    assert.match(out.text, /local only/)
+  } finally {
+    globalThis.fetch = previousFetch
+  }
+})
+
+test('both backends failing is a skip, not a crash', async () => {
+  const previousFetch = globalThis.fetch
+  globalThis.fetch = async () => new Response(Buffer.from('opus-audio'), { status: 200 })
+  const dead = {
+    audio: { transcriptions: { create: async () => { throw new Error('down') } } },
+  } as any
+  try {
+    const out = await processAttachments(
+      [{ url: 'https://example.com/voice.ogg', name: 'voice.ogg', size: 1024, contentType: 'audio/ogg' }],
+      dead, 'large-v3-turbo', { client: dead, model: 'whisper-1' },
+    )
+    assert.equal(out.skipped[0]?.reason, 'transcription_failed')
+  } finally {
+    globalThis.fetch = previousFetch
+  }
+})
