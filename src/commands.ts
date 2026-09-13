@@ -318,9 +318,9 @@ export const gptCommand = new SlashCommandBuilder()
       .setName('value').setDescription('off | on | live | collapse').setRequired(true)
       .addChoices(
         { name: 'off', value: 'off' },
-        { name: 'on — keep the reasoning card', value: 'on' },
-        { name: 'live — show only the current thought', value: 'live' },
-        { name: 'collapse — stream the full trace, then collapse', value: 'collapse' },
+        { name: 'on — keep thinking and quoted progress', value: 'on' },
+        { name: 'live — replace thoughts and progress as they arrive', value: 'live' },
+        { name: 'collapse — quoted history, then clear after timeout', value: 'collapse' },
       )
     )
     .addChannelOption(o => o.setName('channel').setDescription('Channel (defaults to current)').setRequired(false))

@@ -1056,7 +1056,7 @@ async function handleUserMessage(
   let lastProgressText = ''
   let liveHeadline = ''
   const liveReasoningTrace: string[] = []
-  const narrationHistory = new NarrationHistory()
+  const narrationHistory = new NarrationHistory(flags.thinking)
   let narrationMessageId: string | null = null
   let liveDetail = ''
   let liveFooter = ''
@@ -1202,7 +1202,7 @@ async function handleUserMessage(
   }
 
   // Retire in place before giving the spinner a new message. Retired messages
-  // leave the crash-cleanup registry and are never scheduled for deletion.
+  // leave crash cleanup; collapse mode schedules their retirement at turn end.
   const retireNarration = async (text: string): Promise<void> => {
     if (!message.channel.isSendable()) return
     const blocks = narrationBlocks(text)
@@ -1211,13 +1211,15 @@ async function handleUserMessage(
     if (prior) {
       await prior.edit({ content: blocks[0], allowedMentions: { parse: [] } })
       pendingPlaceholders.untrack(prior.id)
+      narrationHistory.trackRetired(prior)
       workMessage = null
       placeholderId = null
       narrationMessageId = null
       lastEditedText = ''
     }
     for (const content of blocks.slice(prior ? 1 : 0)) {
-      await message.channel.send({ content, allowedMentions: { parse: [] } })
+      const retired = await message.channel.send({ content, allowedMentions: { parse: [] } })
+      narrationHistory.trackRetired(retired)
     }
   }
 
@@ -1517,6 +1519,12 @@ async function handleUserMessage(
     liveTraceDirty = false
     for (const m of msgs) await m.delete().catch(() => {})
   }
+  const scheduleNarrationCleanup = (): void => {
+    const lingerMs = Number(process.env.GPT_THOUGHT_LINGER_MS) || 60_000
+    for (const action of narrationHistory.cleanupActions(Date.now(), lingerMs)) {
+      deferredActions.schedule(client, action)
+    }
+  }
   const scheduleTransientTraceCleanup = (msgs: Message[]): void => {
     if (!transientTrace || !msgs.length) return
     const lingerMs = Number(process.env.GPT_THOUGHT_LINGER_MS) || 60_000
@@ -1621,12 +1629,14 @@ async function handleUserMessage(
       return
     }
     if (event.type === 'progress') {
+      if (flags.thinking === 'live') liveHeadline = ''
       liveActivity = 'writing'
       if (narrationHistory.accept(event.reply)) queueLiveText(event.reply, true)
       return
     }
     if (event.type === 'reasoning_progress') {
       liveActivity = 'thinking'
+      if (flags.thinking === 'live') narrationHistory.clearCurrent()
       void lifecycle.reasoning()
       const reasoningIsVisible = flags.thinking !== 'off'
       if (flags.thinking === 'on' || flags.thinking === 'collapse') {
@@ -2045,6 +2055,7 @@ async function handleUserMessage(
       if (workMessage && !targetMessage) {
         try { await workMessage.delete() } catch {}
       }
+      scheduleNarrationCleanup()
       scheduleTransientTraceCleanup(liveTraceMsgs)
       await finishPostTurnRollover()
       return
@@ -2058,6 +2069,7 @@ async function handleUserMessage(
         await message.channel.send({ files: result.files.slice(0, 10) })
       }
       await lifecycle.transition(codexFailureLifecycle ?? 'replied')
+      scheduleNarrationCleanup()
       scheduleTransientTraceCleanup(liveTraceMsgs)
       await finishPostTurnRollover()
       return
@@ -2214,6 +2226,7 @@ async function handleUserMessage(
     // every page; live keeps one rolling window.
     const toDelete: Message[] = [...transientTraceMsgs]
     if (transientTrace && liveTraceMsgs.length) toDelete.push(...liveTraceMsgs)
+    scheduleNarrationCleanup()
     scheduleTransientTraceCleanup(toDelete)
 
     // Commit the clean final answer before any rollover can discard provider
@@ -2293,6 +2306,8 @@ async function handleUserMessage(
       await errorMessage?.react('🔁').catch(() => {})
     } catch {}
   } finally {
+    await settleLiveUi()
+    scheduleNarrationCleanup()
     await finishPostTurnRollover()
     if (activeAgentViews.get(channelId) === refreshAgentView) activeAgentViews.delete(channelId)
     if (activeLifecycleTrackers.get(channelId) === lifecycle) activeLifecycleTrackers.delete(channelId)

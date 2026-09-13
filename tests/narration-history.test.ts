@@ -64,6 +64,7 @@ test('production demotion edits the original message and removes it from crash c
   }
   // Execute the actual production callback with a Discord transport double.
   const factory = new Function('message', 'pendingPlaceholders', 'narrationBlocks', 'prior', transpile(`
+    const narrationHistory = { trackRetired: () => {} };
     let workMessage = prior, narrationMessageId = prior.id, targetMessage = null;
     let placeholderId = prior.id, lastEditedText = 'old';
     ${source.slice(start, end)}
@@ -111,4 +112,58 @@ test('authoritative final answer is not retained from pending or displayed progr
     await history.finish(retire)
     assert.deepEqual(saved, ['Checking the result'])
   }
+})
+
+for (const mode of ['on', 'collapse', 'live', 'off'] as const) {
+  test(`${mode} controls whether previous narration is retained`, async () => {
+    const history = new NarrationHistory(mode)
+    const retired: string[] = []
+    const retire = async (text: string) => { retired.push(text) }
+    history.accept('first')
+    await history.advance(retire)
+    history.accept('second')
+    history.accept('third')
+    await history.advance(retire)
+    assert.equal(history.current, 'third')
+    await history.finish(retire)
+    assert.deepEqual(retired, mode === 'on' || mode === 'collapse' ? ['first', 'second', 'third'] : [])
+  })
+
+  test(`${mode} schedules only its own retired quotes for collapse`, () => {
+    const history = new NarrationHistory(mode)
+    history.trackRetired({ id: 'quote', channelId: 'channel' })
+    const actions = history.cleanupActions(1000, 60000)
+    assert.deepEqual(actions, mode === 'collapse'
+      ? [{ channelId: 'channel', messageId: 'quote', action: 'delete', dueAt: 61000 }] : [])
+    assert.deepEqual(history.cleanupActions(2000, 60000), [])
+  })
+}
+
+test('collapse quotes expire after the configured timeout even after registry reload', async t => {
+  const { DeferredActions } = await import('../src/deferred-actions.ts')
+  const { mkdtempSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const dir = mkdtempSync(join(tmpdir(), 'narration-expiry-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1000 })
+  const contents = new Map([['quote', '>>> progress'], ['final', 'answer']])
+  const client: any = { channels: { fetch: async () => ({
+    isTextBased: () => true,
+    messages: { fetch: async (id: string) => ({ delete: async () => { contents.delete(id) } }) },
+  }) } }
+  const history = new NarrationHistory('collapse')
+  history.trackRetired({ id: 'quote', channelId: 'channel' })
+  const file = join(dir, 'deferred.json')
+  const actions = new DeferredActions(file)
+  for (const action of history.cleanupActions(Date.now(), 60000)) actions.schedule(client, action)
+  t.mock.timers.reset()
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1000 })
+  new DeferredActions(file).rearm(client)
+  t.mock.timers.tick(59999)
+  assert.equal(contents.has('quote'), true)
+  t.mock.timers.tick(1)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(contents.has('quote'), false)
+  assert.equal(contents.get('final'), 'answer')
 })

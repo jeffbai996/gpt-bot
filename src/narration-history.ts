@@ -7,6 +7,31 @@ export function narrationBlocks(text: string): string[] {
 
 /** The render owner serializes advance/finish with Discord edits. */
 export class NarrationHistory {
+  constructor(private readonly mode: 'on' | 'collapse' | 'live' | 'off' = 'on') {}
+
+  private retired = new Map<string, string>()
+
+  trackRetired(message: { id: string; channelId: string }): void {
+    if (this.mode === 'collapse') this.retired.set(message.id, message.channelId)
+  }
+
+  cleanupActions(now: number, lingerMs: number) {
+    const actions = [...this.retired].map(([messageId, channelId]) => ({
+      channelId, messageId, action: 'delete' as const, dueAt: now + lingerMs,
+    }))
+    this.retired.clear()
+    return actions
+  }
+
+  clearCurrent(): void {
+    this.current = ''
+    this.pending = []
+  }
+
+  private get retainsHistory(): boolean {
+    return this.mode === 'on' || this.mode === 'collapse'
+  }
+
   current = ''
   private pending: string[] = []
   private last = ''
@@ -33,7 +58,7 @@ export class NarrationHistory {
 
   private async drain(retire: (text: string) => Promise<void>): Promise<void> {
     while (this.pending.length) {
-      if (this.current) await retire(this.current)
+      if (this.current && this.retainsHistory) await retire(this.current)
       this.current = this.pending.shift()!
     }
   }
@@ -49,7 +74,7 @@ export class NarrationHistory {
       }
       await this.drain(retire)
       if (this.current) {
-        await retire(this.current)
+        if (this.retainsHistory) await retire(this.current)
         this.current = ''
       }
     })
