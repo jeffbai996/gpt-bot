@@ -139,8 +139,13 @@ export async function processAttachments(
   // Second transcription backend, tried only if `client` fails. The caller
   // points `client` at the box's resident whisper service and passes the
   // metered OpenAI client here, so a local outage costs money rather than the
-  // voice note itself.
-  fallback?: { client: OpenAI, model: string }
+  // voice note itself. `onFallback` fires when that happens — silent paid
+  // spend is the failure mode worth hearing about, so the caller raises it.
+  fallback?: {
+    client: OpenAI
+    model: string
+    onFallback?: (name: string, error: unknown) => void
+  }
 ): Promise<ProcessedAttachments> {
   if (attachments.length === 0) return EMPTY
 
@@ -209,6 +214,13 @@ export async function processAttachments(
           if (!fallback) throw primaryError
           console.error('primary transcription failed for', name,
             '- falling back to', fallback.model, primaryError)
+          // Raised before the paid call, so the alert still happens if the
+          // fallback throws too.
+          try {
+            fallback.onFallback?.(name, primaryError)
+          } catch (alertError) {
+            console.error('fallback alert failed:', alertError)
+          }
           text = (await fallback.client.audio.transcriptions.create({
             model: fallback.model,
             file: await toFile(buf, name, { type: mime }),

@@ -399,11 +399,57 @@ const transcribeClient = TRANSCRIBE_URL
       maxRetries: 0,
     })
   : null
+// #alerts — infra pages, not conversation. Same channel host-memwatch uses.
+const ALERTS_CHANNEL = process.env.GPT_BOT_ALERTS_CHANNEL || '1534793867373707264'
+// A local-whisper outage lasts as long as it lasts, and every voice note in
+// that window would otherwise page. One alert, then a quiet hour that counts
+// what it swallowed, so the channel stays readable and the total is still true.
+const FALLBACK_ALERT_COOLDOWN_MS = 60 * 60 * 1000
+let lastFallbackAlert = 0
+let suppressedFallbacks = 0
+
+/**
+ * Page #alerts when a voice note had to go to the metered API.
+ *
+ * The point is that this failure is otherwise INVISIBLE: the transcript still
+ * arrives, the user notices nothing, and the only trace is OpenAI spend that
+ * nobody connects to a dead local service.
+ */
+function alertTranscriptionFallback(name: string, error: unknown): void {
+  const now = Date.now()
+  if (now - lastFallbackAlert < FALLBACK_ALERT_COOLDOWN_MS) {
+    suppressedFallbacks += 1
+    return
+  }
+  const alsoSuppressed = suppressedFallbacks
+  lastFallbackAlert = now
+  suppressedFallbacks = 0
+  const reason = error instanceof Error ? error.message : String(error)
+  const extra = alsoSuppressed
+    ? ` (+${alsoSuppressed} more since the last alert)`
+    : ''
+  const text =
+    `⚠️ **gpt: voice note fell back to the metered OpenAI API**${extra}\n` +
+    `Local whisper at \`${TRANSCRIBE_URL}\` did not answer for \`${name}\`: ${reason}\n` +
+    'Transcription still worked and is now being billed. ' +
+    'Check `systemctl --user status whisper-server`.'
+  // Fire and forget: a failed page must never take down the turn that raised it.
+  void (async () => {
+    try {
+      const channel = await client.channels.fetch(ALERTS_CHANNEL)
+      if (channel?.isTextBased() && 'send' in channel) await channel.send(text)
+    } catch (e) {
+      console.error('could not page #alerts about the transcription fallback:', e)
+    }
+  })()
+}
+
 // (primary, model, fallback) for processAttachments — local first when it is
 // configured, otherwise the metered API alone.
-const transcribeArgs = (): [OpenAI, string, { client: OpenAI, model: string } | undefined] =>
+const transcribeArgs = (): [OpenAI, string, { client: OpenAI, model: string, onFallback?: (name: string, error: unknown) => void } | undefined] =>
   transcribeClient
-    ? [transcribeClient, TRANSCRIBE_MODEL, { client: openaiRaw, model: 'whisper-1' }]
+    ? [transcribeClient, TRANSCRIBE_MODEL,
+       { client: openaiRaw, model: 'whisper-1', onFallback: alertTranscriptionFallback }]
     : [openaiRaw, 'whisper-1', undefined]
 
 // Local Ollama client (OpenAI-compatible /v1) for the cost-sensitive background
