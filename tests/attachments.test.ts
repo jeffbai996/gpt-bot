@@ -296,3 +296,99 @@ test('both backends failing is a skip, not a crash', async () => {
     globalThis.fetch = previousFetch
   }
 })
+
+test('falling back to the metered API raises an alert exactly once', async () => {
+  const previousFetch = globalThis.fetch
+  globalThis.fetch = async () => new Response(Buffer.from('opus-audio'), { status: 200 })
+  const alerts: Array<{ name: string, reason: string }> = []
+  const localDown = {
+    audio: { transcriptions: { create: async () => { throw new Error('ECONNREFUSED') } } },
+  } as any
+  const meteredApi = {
+    audio: { transcriptions: { create: async () => ({ text: 'billed transcript' }) } },
+  } as any
+  try {
+    await processAttachments(
+      [{ url: 'https://example.com/voice.ogg', name: 'voice.ogg', size: 1024, contentType: 'audio/ogg' }],
+      localDown, 'large-v3-turbo',
+      {
+        client: meteredApi,
+        model: 'whisper-1',
+        onFallback: (name, error) => alerts.push({
+          name, reason: error instanceof Error ? error.message : String(error),
+        }),
+      },
+    )
+    assert.equal(alerts.length, 1)
+    assert.equal(alerts[0]?.name, 'voice.ogg')
+    assert.match(alerts[0]!.reason, /ECONNREFUSED/)
+  } finally {
+    globalThis.fetch = previousFetch
+  }
+})
+
+test('a successful local transcription raises no alert', async () => {
+  const previousFetch = globalThis.fetch
+  globalThis.fetch = async () => new Response(Buffer.from('opus-audio'), { status: 200 })
+  let alerted = false
+  const local = {
+    audio: { transcriptions: { create: async () => ({ text: 'local' }) } },
+  } as any
+  try {
+    await processAttachments(
+      [{ url: 'https://example.com/voice.ogg', name: 'voice.ogg', size: 1024, contentType: 'audio/ogg' }],
+      local, 'large-v3-turbo',
+      { client: local, model: 'whisper-1', onFallback: () => { alerted = true } },
+    )
+    assert.equal(alerted, false, 'no alert when nothing fell back')
+  } finally {
+    globalThis.fetch = previousFetch
+  }
+})
+
+test('the alert fires even when the metered fallback also fails', async () => {
+  // Otherwise the loudest outage — both backends down — would be the silent one.
+  const previousFetch = globalThis.fetch
+  globalThis.fetch = async () => new Response(Buffer.from('opus-audio'), { status: 200 })
+  let alerted = false
+  const dead = {
+    audio: { transcriptions: { create: async () => { throw new Error('down') } } },
+  } as any
+  try {
+    const out = await processAttachments(
+      [{ url: 'https://example.com/voice.ogg', name: 'voice.ogg', size: 1024, contentType: 'audio/ogg' }],
+      dead, 'large-v3-turbo',
+      { client: dead, model: 'whisper-1', onFallback: () => { alerted = true } },
+    )
+    assert.equal(alerted, true)
+    assert.equal(out.skipped[0]?.reason, 'transcription_failed')
+  } finally {
+    globalThis.fetch = previousFetch
+  }
+})
+
+test('a throwing alert hook does not cost the transcript', async () => {
+  const previousFetch = globalThis.fetch
+  globalThis.fetch = async () => new Response(Buffer.from('opus-audio'), { status: 200 })
+  const localDown = {
+    audio: { transcriptions: { create: async () => { throw new Error('ECONNREFUSED') } } },
+  } as any
+  const meteredApi = {
+    audio: { transcriptions: { create: async () => ({ text: 'still delivered' }) } },
+  } as any
+  try {
+    const out = await processAttachments(
+      [{ url: 'https://example.com/voice.ogg', name: 'voice.ogg', size: 1024, contentType: 'audio/ogg' }],
+      localDown, 'large-v3-turbo',
+      {
+        client: meteredApi,
+        model: 'whisper-1',
+        onFallback: () => { throw new Error('discord is down too') },
+      },
+    )
+    assert.match(out.text, /still delivered/)
+    assert.deepEqual(out.skipped, [])
+  } finally {
+    globalThis.fetch = previousFetch
+  }
+})
