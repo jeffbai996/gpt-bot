@@ -39,7 +39,10 @@ test('production image path fetches the selected original instead of the newer b
   const source = await readFile(new URL('../src/gpt.ts', import.meta.url), 'utf8')
   const start = source.indexOf('      let referenceParts = imageParts')
   const end = source.indexOf('      const image = await generateImage', start)
-  const factory = new Function('imageRequest', 'rawHistory', 'userId', 'selfId', 'imageParts', 'imagePaths', 'processAttachments', 'openaiRaw', 'Buffer',
+  // `transcribeArgs` joined the injected names when voice notes moved to the
+  // box's local whisper service (2026-09-13); this block only handles images,
+  // so a stub is enough.
+  const factory = new Function('imageRequest', 'rawHistory', 'userId', 'selfId', 'imageParts', 'imagePaths', 'processAttachments', 'openaiRaw', 'transcribeArgs', 'Buffer',
     transpile(`return (async () => { ${source.slice(start, end)} return references; })();`))
   const history = [
     {id:'100',authorId:'user',attachments:[{name:'original.png',url:'https://example.com/original.png',mimeType:'image/png'}]},
@@ -52,11 +55,11 @@ test('production image path fetches the selected original instead of the newer b
     retrieved.push(...attachments.map(a => a.url))
     return {imageParts:[{type:'image_url',image_url:{url:'data:image/png;base64,b3JpZ2luYWw='}}],imagePaths:['/tmp/example-original.png']}
   }
-  const result = await factory({useReference:true,referenceMessageId:'100'},history,'user','bot',[],paths,process,null,Buffer)
+  const result = await factory({useReference:true,referenceMessageId:'100'},history,'user','bot',[],paths,process,null,() => [null, 'whisper-1', undefined],Buffer)
   assert.deepEqual(retrieved, ['https://example.com/original.png'])
   assert.equal(result[0].data.toString(), 'original')
   assert.deepEqual(paths, ['/tmp/example-original.png'])
   for (const referenceMessageId of ['102', '999']) {
-    await assert.rejects(factory({useReference:true,referenceMessageId},history,'user','bot',[],[],process,null,Buffer), /unavailable/)
+    await assert.rejects(factory({useReference:true,referenceMessageId},history,'user','bot',[],[],process,null,() => [null, 'whisper-1', undefined],Buffer), /unavailable/)
   }
 })

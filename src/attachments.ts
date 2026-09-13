@@ -135,7 +135,12 @@ const EMPTY: ProcessedAttachments = {
 export async function processAttachments(
   attachments: AttachmentInput[],
   client: OpenAI,
-  transcribeModel: string = 'whisper-1'
+  transcribeModel: string = 'whisper-1',
+  // Second transcription backend, tried only if `client` fails. The caller
+  // points `client` at the box's resident whisper service and passes the
+  // metered OpenAI client here, so a local outage costs money rather than the
+  // voice note itself.
+  fallback?: { client: OpenAI, model: string }
 ): Promise<ProcessedAttachments> {
   if (attachments.length === 0) return EMPTY
 
@@ -190,12 +195,27 @@ export async function processAttachments(
         // Node 22 does not provide a global File constructor on this host.
         // The SDK helper creates its Node-safe FileLike upload instead.
         const file = await toFile(buf, name, { type: mime })
-        const transcription = await client.audio.transcriptions.create({
-          model: transcribeModel,
-          file
-        })
-        textBlocks.push(`[transcribed audio: ${name}]\n${transcription.text}`)
-        result.transcripts.push({ name, characters: transcription.text.length })
+        let text: string
+        try {
+          text = (await client.audio.transcriptions.create({
+            model: transcribeModel,
+            file,
+          })).text
+        } catch (primaryError) {
+          // The primary is normally the box's local whisper service. If it is
+          // down, a voice note must still be heard — pay for the metered API
+          // rather than drop it. No fallback configured means the original
+          // failure stands.
+          if (!fallback) throw primaryError
+          console.error('primary transcription failed for', name,
+            '- falling back to', fallback.model, primaryError)
+          text = (await fallback.client.audio.transcriptions.create({
+            model: fallback.model,
+            file: await toFile(buf, name, { type: mime }),
+          })).text
+        }
+        textBlocks.push(`[transcribed audio: ${name}]\n${text}`)
+        result.transcripts.push({ name, characters: text.length })
       } catch (e) {
         console.error('transcription failed for', name, e)
         result.skipped.push({ name, reason: 'transcription_failed' })

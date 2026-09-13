@@ -380,8 +380,31 @@ const agentCommands = new GptAgentCommandStore(
 persona.setPinnedFactsStore(pinnedFacts)
 const openai = new OpenAIClient(OPENAI_KEY, DEFAULT_MODEL)
 // Raw SDK client for metered OpenAI endpoints that have no local equivalent:
-// audio transcriptions, web-search side calls, explicit API turns, and API postmortems.
+// web-search side calls, explicit API turns, and API postmortems. Audio
+// transcription left this list on 2026-09-13 — see transcribeClient below.
 const openaiRaw = new OpenAI({ apiKey: OPENAI_KEY })
+
+// Voice notes go to the box's resident whisper service (large-v3-turbo on the
+// 3090, model loaded once, shared by every bot) over its OpenAI-compatible
+// route. `apiKey` is a throwaway; the service ignores it. openaiRaw stays as
+// the fallback, so a local outage costs money rather than the voice note.
+// Set GPT_BOT_TRANSCRIBE_URL='' to go straight to the metered API.
+const TRANSCRIBE_URL = process.env.GPT_BOT_TRANSCRIBE_URL ?? 'http://172.17.0.1:8899/v1'
+const TRANSCRIBE_MODEL = process.env.GPT_BOT_TRANSCRIBE_MODEL || 'large-v3-turbo'
+const transcribeClient = TRANSCRIBE_URL
+  ? new OpenAI({
+      apiKey: 'local',
+      baseURL: TRANSCRIBE_URL,
+      timeout: Number(process.env.GPT_BOT_TRANSCRIBE_TIMEOUT_MS) || 120_000,
+      maxRetries: 0,
+    })
+  : null
+// (primary, model, fallback) for processAttachments — local first when it is
+// configured, otherwise the metered API alone.
+const transcribeArgs = (): [OpenAI, string, { client: OpenAI, model: string } | undefined] =>
+  transcribeClient
+    ? [transcribeClient, TRANSCRIBE_MODEL, { client: openaiRaw, model: 'whisper-1' }]
+    : [openaiRaw, 'whisper-1', undefined]
 
 // Local Ollama client (OpenAI-compatible /v1) for the cost-sensitive background
 // paths that DON'T need a frontier model: per-message embeddings and history
@@ -1009,7 +1032,7 @@ async function handleUserMessage(
   if (attachments.length > 0) {
     await lifecycle.transition('ingesting')
     try {
-      const processed = await processAttachments(attachments, openaiRaw)
+      const processed = await processAttachments(attachments, ...transcribeArgs())
       imageParts = processed.imageParts
       imagePaths = processed.imagePaths
       extraText = processed.text
@@ -1912,7 +1935,7 @@ async function handleUserMessage(
           && [userId, selfId].includes(prior.authorId))
         const selected = source?.attachments.filter(att => /^image\/(png|jpeg|webp)$/.test(att.mimeType ?? '')) ?? []
         if (!selected.length) throw new Error('The selected earlier image is unavailable in this channel history.')
-        const processed = await processAttachments(selected.map(att => ({ ...att, contentType: att.mimeType })), openaiRaw)
+        const processed = await processAttachments(selected.map(att => ({ ...att, contentType: att.mimeType })), ...transcribeArgs())
         referenceParts = processed.imageParts
         imagePaths.push(...processed.imagePaths)
       }
