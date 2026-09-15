@@ -1014,6 +1014,50 @@ export async function materializeGeneratedImages(dataUrls: string[]): Promise<st
   }
 }
 
+/** Where codex keeps its own state. The bot never overrides CODEX_HOME, but
+ * codex itself honours it, so read it the same way rather than hardcoding. */
+const CODEX_HOME = process.env.CODEX_HOME || path.join(os.homedir(), '.codex')
+
+const HARVESTABLE_IMAGE_RE = /\.(?:png|jpe?g|gif|webp)$/i
+
+/** Images the built-in `image_gen` tool produced during this turn.
+ *
+ * codex-cli 0.154.0 (installed 2026-09-13) changed two things at once and
+ * between them they silently ate every picture gpt drew. `image_gen` became a
+ * BUILT-IN tool: instead of returning a `data:image/png;base64,…` URL through
+ * a tool-call output, it writes a PNG to $CODEX_HOME/generated_images/<thread>/
+ * and simply tells the model it succeeded. And the same release moved thread
+ * history into thread_history_*.sqlite, so `readRolloutGeneratedImages` below
+ * now scans a .jsonl frozen weeks before the turn it is asked about.
+ *
+ * Either break alone is enough. Together they produced the 2026-09-14 trading
+ * channel: gpt genuinely generated three ducks, said "There.", and Discord
+ * showed empty space while all three sat on disk.
+ *
+ * Read the directory instead. It is keyed by thread id and is codex's own
+ * documented output location — a far more stable contract than the shape of a
+ * rollout row, which is exactly what moved underneath us. */
+export async function readBuiltinGeneratedImages(threadId: string, startedAtMs: number): Promise<string[]> {
+  const dir = path.join(CODEX_HOME, 'generated_images', threadId)
+  let names: string[] = []
+  try { names = await readdir(dir) } catch { return [] }
+  const found: Array<{ file: string, mtimeMs: number }> = []
+  for (const name of names) {
+    if (!HARVESTABLE_IMAGE_RE.test(name)) continue
+    const file = path.join(dir, name)
+    try {
+      // A second of slack: the turn clock starts before codex is even spawned,
+      // and a resumed thread's directory is full of older turns' output that
+      // must not be re-attached.
+      const info = await stat(file)
+      if (info.isFile() && info.mtimeMs >= startedAtMs - 1_000) found.push({ file, mtimeMs: info.mtimeMs })
+    } catch { /* codex raced us and removed it */ }
+  }
+  // Oldest first, so a multi-image turn arrives in the order it was drawn.
+  // Discord caps a message at 10 attachments.
+  return found.sort((a, b) => a.mtimeMs - b.mtimeMs).map(entry => entry.file).slice(0, 10)
+}
+
 async function readRolloutGeneratedImages(threadId: string, startedAtMs: number): Promise<string[]> {
   const base = path.join(os.homedir(), '.codex', 'sessions')
   let entries: string[] = []
@@ -1487,9 +1531,15 @@ export async function respondViaCodex(input: CodexChatInput): Promise<RespondRes
   }
 
   input.onEvent?.({ type: 'done' })
-  const generatedFiles = threadId
-    ? await readRolloutGeneratedImages(threadId, t0)
-    : []
+  // Both routes: the data-URL tool-call shape older codex builds used, and the
+  // built-in tool's on-disk output. Neither is guaranteed across an upgrade,
+  // and a turn that produced nothing just yields two empty lists.
+  const rolloutImages = threadId ? await readRolloutGeneratedImages(threadId, t0) : []
+  const builtinImages = threadId ? await readBuiltinGeneratedImages(threadId, t0) : []
+  const generatedFiles = [...rolloutImages, ...builtinImages]
+  if (builtinImages.length) {
+    console.log(`[codex-image] attaching ${builtinImages.length} built-in image(s) from ${threadId}`)
+  }
 
   return {
     react: null,
@@ -1510,6 +1560,10 @@ export async function respondViaCodex(input: CodexChatInput): Promise<RespondRes
     agents,
     threadId,
     files: generatedFiles,
-    temporaryFiles: generatedFiles,
+    // Only the rollout copies are ours to delete — materializeGeneratedImages
+    // wrote them to a temp dir. The built-in tool's files live inside
+    // CODEX_HOME and belong to codex's own thread state; sweeping them up after
+    // the turn would delete something we do not own.
+    temporaryFiles: rolloutImages,
   }
 }
