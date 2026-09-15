@@ -130,6 +130,10 @@ export interface RespondResult extends ParsedResponse {
   // Bot-created copies that are safe to remove after Discord accepts them.
   // Original tool files must never be listed here.
   temporaryFiles?: string[]
+  // Files the codex built-in image_gen tool wrote, pending a delivery record.
+  // Not a subset of temporaryFiles: these live inside CODEX_HOME and are never
+  // swept up after the turn.
+  codexImages?: string[]
 }
 
 export class OpenAIRequestRejected extends Error {

@@ -7,6 +7,7 @@ import path from 'path'
 import os from 'os'
 import fs from 'fs'
 import { scanOutboundFiles } from './outbound-files.ts'
+import { deliveredImages } from './delivered-images.ts'
 import { setTimeout as sleep } from 'node:timers/promises'
 import dotenv from 'dotenv'
 import { AccessManager } from './access.ts'
@@ -1759,6 +1760,7 @@ async function handleUserMessage(
         const allToolCalls = [...result.toolCalls]
         const allFiles = [...(result.files ?? [])]
         const allTemporaryFiles = [...(result.temporaryFiles ?? [])]
+        const allCodexImages = [...(result.codexImages ?? [])]
         while (isNonTerminalActionReply(result.reply ?? '')) {
           if (!result.threadId || completionContinuations >= MAX_COMPLETION_CONTINUATIONS) {
             throw new NonTerminalCompletionError(completionContinuations)
@@ -1780,11 +1782,13 @@ async function handleUserMessage(
           allToolCalls.push(...retry.toolCalls)
           allFiles.push(...(retry.files ?? []))
           allTemporaryFiles.push(...(retry.temporaryFiles ?? []))
+          allCodexImages.push(...(retry.codexImages ?? []))
           completionReplies.push(retry.reply ?? '')
           retry.durationMs = totalDurationMs
           retry.toolCalls = [...allToolCalls]
           retry.files = [...new Set(allFiles)]
           retry.temporaryFiles = [...new Set(allTemporaryFiles)]
+          retry.codexImages = [...new Set(allCodexImages)]
           result = retry
         }
         result.reply = mergeCompletionReplies(completionReplies)
@@ -2209,11 +2213,23 @@ async function handleUserMessage(
     // follow-up message so it works regardless of the edit-vs-reply branch above,
     // and so the visual lands right under the text. Discord caps 10 files/msg.
     if (result.files?.length && message.channel.isSendable()) {
+      const sent = result.files.slice(0, 10)
       try {
         bottomContentMessage = await message.channel.send({
           content: generatedImageFooter || undefined,
-          files: result.files.slice(0, 10),
+          files: sent,
         })
+        // Record codex's own image_gen output as delivered ONLY now — the send
+        // above is the thing that makes it true. A throw leaves the ledger
+        // untouched so the next turn tries again instead of dropping the
+        // picture for good.
+        if (result.threadId && result.codexImages?.length) {
+          const delivered = result.codexImages.filter(file => sent.includes(file))
+          if (delivered.length) {
+            deliveredImages.mark(result.threadId, delivered.map(file => path.basename(file)))
+            console.log(`[codex-image] delivered ${delivered.length} image(s) for thread ${result.threadId}`)
+          }
+        }
       } catch (e) {
         console.error('screenshot attach failed:', e instanceof Error ? e.message : e)
       }

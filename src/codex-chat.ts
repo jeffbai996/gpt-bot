@@ -10,6 +10,7 @@ import type { RespondResult, ToolCall, LifecycleEvent } from './openai.ts'
 import { CodexAgentRegistry, type CodexAgentSnapshot } from './codex-agents.ts'
 import { beginTurn, noteRoundtrip, type LiveUsageDelta } from './live-usage.ts'
 import { CodexAppServerClient } from './codex-app-server.ts'
+import { BACKLOG_MAX_AGE_MS, deliveredImages } from './delivered-images.ts'
 import type { SteeringInbox } from './steering-inbox.ts'
 import { codexCompletionFailure, type ProviderFailure } from './provider-failure.ts'
 
@@ -1020,7 +1021,7 @@ const CODEX_HOME = process.env.CODEX_HOME || path.join(os.homedir(), '.codex')
 
 const HARVESTABLE_IMAGE_RE = /\.(?:png|jpe?g|gif|webp)$/i
 
-/** Images the built-in `image_gen` tool produced during this turn.
+/** Images the built-in `image_gen` tool wrote that Discord has not seen yet.
  *
  * codex-cli 0.154.0 (installed 2026-09-13) changed two things at once and
  * between them they silently ate every picture gpt drew. `image_gen` became a
@@ -1036,25 +1037,32 @@ const HARVESTABLE_IMAGE_RE = /\.(?:png|jpe?g|gif|webp)$/i
  *
  * Read the directory instead. It is keyed by thread id and is codex's own
  * documented output location — a far more stable contract than the shape of a
- * rollout row, which is exactly what moved underneath us. */
-export async function readBuiltinGeneratedImages(threadId: string, startedAtMs: number): Promise<string[]> {
+ * rollout row, which is exactly what moved underneath us.
+ *
+ * Selection is by DELIVERY, not by mtime. A turn-scoped window handles "draw me
+ * a duck" and nothing else: asked to "attach the 3 images you made earlier",
+ * codex generates nothing, a clock-based filter matches nothing, and the reply
+ * names pictures Discord never shows (Jeff 2026-09-15). The invariant that
+ * actually holds is that every image codex draws reaches the channel once. */
+export async function readBuiltinGeneratedImages(threadId: string, now = Date.now()): Promise<string[]> {
   const dir = path.join(CODEX_HOME, 'generated_images', threadId)
   let names: string[] = []
   try { names = await readdir(dir) } catch { return [] }
   const found: Array<{ file: string, mtimeMs: number }> = []
   for (const name of names) {
     if (!HARVESTABLE_IMAGE_RE.test(name)) continue
+    if (deliveredImages.delivered(threadId, name)) continue
     const file = path.join(dir, name)
     try {
-      // A second of slack: the turn clock starts before codex is even spawned,
-      // and a resumed thread's directory is full of older turns' output that
-      // must not be re-attached.
       const info = await stat(file)
-      if (info.isFile() && info.mtimeMs >= startedAtMs - 1_000) found.push({ file, mtimeMs: info.mtimeMs })
+      // Delivering a backlog is the point; resurrecting a months-old thread's
+      // output into today's conversation is not.
+      if (info.isFile() && now - info.mtimeMs <= BACKLOG_MAX_AGE_MS) found.push({ file, mtimeMs: info.mtimeMs })
     } catch { /* codex raced us and removed it */ }
   }
   // Oldest first, so a multi-image turn arrives in the order it was drawn.
-  // Discord caps a message at 10 attachments.
+  // Discord caps a message at 10 attachments; the remainder keeps its place in
+  // the ledger and goes out on the next turn.
   return found.sort((a, b) => a.mtimeMs - b.mtimeMs).map(entry => entry.file).slice(0, 10)
 }
 
@@ -1535,7 +1543,7 @@ export async function respondViaCodex(input: CodexChatInput): Promise<RespondRes
   // built-in tool's on-disk output. Neither is guaranteed across an upgrade,
   // and a turn that produced nothing just yields two empty lists.
   const rolloutImages = threadId ? await readRolloutGeneratedImages(threadId, t0) : []
-  const builtinImages = threadId ? await readBuiltinGeneratedImages(threadId, t0) : []
+  const builtinImages = threadId ? await readBuiltinGeneratedImages(threadId) : []
   const generatedFiles = [...rolloutImages, ...builtinImages]
   if (builtinImages.length) {
     console.log(`[codex-image] attaching ${builtinImages.length} built-in image(s) from ${threadId}`)
@@ -1560,6 +1568,9 @@ export async function respondViaCodex(input: CodexChatInput): Promise<RespondRes
     agents,
     threadId,
     files: generatedFiles,
+    // Marked delivered by gpt.ts only once Discord accepts the upload, so a
+    // failed send is retried next turn instead of being silently dropped.
+    codexImages: builtinImages,
     // Only the rollout copies are ours to delete — materializeGeneratedImages
     // wrote them to a temp dir. The built-in tool's files live inside
     // CODEX_HOME and belong to codex's own thread state; sweeping them up after
