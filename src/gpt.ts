@@ -94,6 +94,7 @@ import { INTERRUPTED_MARKER, RETRY_PROMPT } from './interruption-label.ts'
 import { stripToolTraceCard } from './render-cleanup.ts'
 import { isHardStopMessage } from './stop-command.ts'
 import { loadRelayConfig, TrustedRelayVerifier, type TrustedRelay } from './trusted-relay.ts'
+import { TellTurnMarker, isTellPayload } from './tell-turn.ts'
 import { DEFAULT_OPENAI_MODEL, DEFAULT_SUMMARIZATION_MODEL } from './models.ts'
 import {
   DEFAULT_TOOL_CALL_WIDTH,
@@ -133,6 +134,7 @@ import OpenAI from 'openai'
 const STATE_DIR = process.env.GPT_STATE_DIR || path.join(os.homedir(), '.gpt', 'channels', 'discord')
 dotenv.config({ path: path.join(STATE_DIR, '.env') })
 const trustedRelays = new TrustedRelayVerifier(() => loadRelayConfig(STATE_DIR))
+const tellTurns = new TellTurnMarker(STATE_DIR)
 
 function failureActions(messageId: string) {
   return new ActionRowBuilder<ButtonBuilder>().addComponents(
@@ -2486,6 +2488,11 @@ async function dispatchInboundMessage(message: Message): Promise<void> {
   try {
     const acceptedRelay = relay ? trustedRelays.verify(relayInput) ?? undefined : undefined
     if (relay && !acceptedRelay) return
+    // A delivered bot-to-bot tell marks the state dir for its window, so a
+    // tell sent from inside this turn is refused by the owner's CLI. See
+    // tell-turn.ts for why it is a TTL and not a clear-at-end.
+    if (acceptedRelay && isTellPayload(acceptedRelay.payload)) tellTurns.arm()
+    else tellTurns.sweep()
     // The helper that authored a relay reaps its own transport post after
     // gateway delivery. gpt cannot delete another bot's message without broad
     // Manage Messages permission, and silently swallowing that 403 left hex in
