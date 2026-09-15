@@ -1,46 +1,50 @@
-import { mkdtempSync, readFileSync, existsSync } from 'node:fs'
+import { mkdtempSync, existsSync, readFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { TellTurnMarker, TELL_MARK, TELL_TURN_FILE, isTellPayload } from '../src/tell-turn.ts'
+import { TellTurnMarker, TELL_MARK, isTellPayload } from '../src/tell-turn.ts'
 
 function dir(): string {
   return mkdtempSync(path.join(os.tmpdir(), 'tell-turn-'))
 }
 
-test('a relay payload that opens with the mark is a tell', () => {
+test('a relay payload carrying the mark is a tell, batched or not', () => {
   assert.equal(isTellPayload(`${TELL_MARK} One-off message from a sibling bot ...`), true)
+  assert.equal(isTellPayload(`[owner] hi\n\n${TELL_MARK} folded into a batch`), true)
   assert.equal(isTellPayload('You chose option 1: proceed'), false)
-  assert.equal(isTellPayload(`  ${TELL_MARK} leading space`), true)
 })
 
-test('arming writes an until the relay CLI can read', () => {
-  let now = 1_000_000
-  const marker = new TellTurnMarker(dir(), 60_000, () => now)
+test('the marker is live for exactly the turns that are running', () => {
+  const marker = new TellTurnMarker(dir(), 60_000, () => 1_000_000)
   assert.equal(marker.active(), false)
-  marker.arm()
-  const raw = JSON.parse(readFileSync(marker.file, 'utf8'))
-  assert.equal(raw.until, (now + 60_000) / 1000)
+  marker.arm('msg-1')
   assert.equal(marker.active(), true)
-  now += 60_001
+  marker.arm('msg-2')
+  marker.disarm('msg-1')
+  assert.equal(marker.active(), true)          // msg-2 still running
+  marker.disarm('msg-2')
   assert.equal(marker.active(), false)
+  assert.equal(existsSync(marker.file), false) // nothing running, no file
 })
 
-test('sweep removes only an expired marker', () => {
+test('the file is what the relay CLI reads: turns with an until', () => {
+  const marker = new TellTurnMarker(dir(), 60_000, () => 1_000_000)
+  marker.arm('msg-1')
+  assert.deepEqual(JSON.parse(readFileSync(marker.file, 'utf8')), { turns: { 'msg-1': (1_000_000 + 60_000) / 1000 } })
+})
+
+test('a crashed turn stops blocking after its safety window', () => {
   let now = 5_000
   const marker = new TellTurnMarker(dir(), 1_000, () => now)
-  marker.arm()
-  marker.sweep()
-  assert.equal(existsSync(path.join(path.dirname(marker.file), TELL_TURN_FILE)), true)
-  now += 2_000
-  marker.sweep()
-  assert.equal(existsSync(marker.file), false)
+  marker.arm('msg-1')
+  now += 1_001
+  assert.equal(marker.active(), false)
 })
 
-test('an unreadable marker is not active', () => {
+test('an unreadable marker is not active and disarm never throws', () => {
   const marker = new TellTurnMarker(path.join(dir(), 'missing'))
   assert.equal(marker.active(), false)
-  marker.sweep()   // must not throw
+  marker.disarm('nope')
 })

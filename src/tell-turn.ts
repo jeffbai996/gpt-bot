@@ -3,27 +3,32 @@
 // The owner's relay tooling puts a deliver-or-drop card in front of them; the
 // tap posts a signed relay whose payload opens with TELL_MARK. Claude bots
 // refuse a tell inside such a turn with a PreToolUse hook that reads their
-// transcript. gpt has no hooks, so it leaves a marker file in its state dir
-// instead and the owner's CLI reads it before posting a card:
-// {"until": <epoch seconds>}. Armed with a TTL rather than cleared at turn end,
-// because the turn is queued and may run after dispatch returns; a tell gpt
-// wants to send in the meantime is told to try again later, which is the
-// failure direction we want (Jeff 2026-09-15: no bot loops).
+// transcript. gpt has no hooks, so it keeps a marker file in its state dir
+// for the turns that are RUNNING right now, and the owner's CLI reads it
+// before posting a card: {"turns": {"<message id>": <until, epoch seconds>}}.
+//
+// Tied to the turn, not to a clock: the first cut armed a 20-minute window
+// at dispatch, and a human asking gpt to tell someone two minutes after a
+// tell had been answered was refused (Jeff 2026-09-15: "it shouldn't be
+// blocking on this"). Each entry still carries a safety expiry so a crash
+// mid-turn cannot leave gpt mute forever.
 import { readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 
 export const TELL_MARK = '⟦bot-relay⟧'
 export const TELL_TURN_FILE = '.tell_turn'
-export const TELL_TURN_TTL_MS = 20 * 60_000
+export const TELL_TURN_SAFETY_MS = 2 * 60 * 60_000
 
 export function isTellPayload(payload: string): boolean {
-  return payload.trimStart().startsWith(TELL_MARK)
+  return payload.includes(TELL_MARK)
 }
+
+type Marker = { turns: Record<string, number> }
 
 export class TellTurnMarker {
   constructor(
     private readonly stateDir: string,
-    private readonly ttlMs = TELL_TURN_TTL_MS,
+    private readonly safetyMs = TELL_TURN_SAFETY_MS,
     private readonly clock: () => number = Date.now,
   ) {}
 
@@ -31,29 +36,49 @@ export class TellTurnMarker {
     return path.join(this.stateDir, TELL_TURN_FILE)
   }
 
-  /** Mark the state dir: a tell-originated turn is (about to be) running. */
-  arm(): void {
-    const until = (this.clock() + this.ttlMs) / 1000
+  private read(): Marker {
     try {
-      writeFileSync(this.file, JSON.stringify({ until }) + '\n', { mode: 0o600 })
+      const raw = JSON.parse(readFileSync(this.file, 'utf8'))
+      const turns = raw && typeof raw.turns === 'object' && raw.turns ? raw.turns : {}
+      const now = this.clock()
+      const live: Record<string, number> = {}
+      for (const [id, until] of Object.entries(turns)) {
+        if (Number.isFinite(Number(until)) && Number(until) * 1000 > now) live[id] = Number(until)
+      }
+      return { turns: live }
+    } catch {
+      return { turns: {} }
+    }
+  }
+
+  private write(marker: Marker): void {
+    try {
+      if (Object.keys(marker.turns).length === 0) {
+        try { unlinkSync(this.file) } catch { /* already gone */ }
+        return
+      }
+      writeFileSync(this.file, JSON.stringify(marker) + '\n', { mode: 0o600 })
     } catch {
       // Best effort: the owner's tap is the real gate; this only spares a card.
     }
   }
 
-  /** Is a tell-originated turn still within its window? */
-  active(): boolean {
-    try {
-      const until = Number(JSON.parse(readFileSync(this.file, 'utf8')).until)
-      return Number.isFinite(until) && until * 1000 > this.clock()
-    } catch {
-      return false
-    }
+  /** A tell-originated turn for this inbound message is running now. */
+  arm(turnId: string): void {
+    const marker = this.read()
+    marker.turns[turnId] = (this.clock() + this.safetyMs) / 1000
+    this.write(marker)
   }
 
-  /** Remove an expired marker so the dir does not carry it forever. */
-  sweep(): void {
-    if (this.active()) return
-    try { unlinkSync(this.file) } catch { /* already gone */ }
+  /** That turn is over; a tell from gpt is allowed again. */
+  disarm(turnId: string): void {
+    const marker = this.read()
+    delete marker.turns[turnId]
+    this.write(marker)
+  }
+
+  /** Is any tell-originated turn running (or crashed inside its safety window)? */
+  active(): boolean {
+    return Object.keys(this.read().turns).length > 0
   }
 }

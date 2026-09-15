@@ -897,6 +897,10 @@ async function handleUserMessage(
   // When a batched-queue turn folds several messages together, the combined
   // text comes in via contentOverride; otherwise use the message's own content.
   const userText = contentOverride ?? message.content
+  // A delivered bot-to-bot tell marks this turn for as long as it runs, so a
+  // tell sent from inside it is refused by the owner's CLI (tell-turn.ts).
+  const tellTurn = isTellPayload(actor?.payload ?? '') || isTellPayload(userText)
+  if (tellTurn) tellTurns.arm(message.id)
   const presenceTicket = presenceOwner.request(userText)
   const replyContext = await resolveReplyContext(message)
   const pinContext = await resolvePinContext(message)
@@ -2353,6 +2357,7 @@ async function handleUserMessage(
     if (placeholderId) pendingPlaceholders.untrack(placeholderId)
     steeringInbox?.close()
     activeTurns.done(channelId, turnGeneration)
+    if (tellTurn) tellTurns.disarm(message.id)
     logTurnLifecycle({
       event: 'turn_finished',
       channelId,
@@ -2488,11 +2493,6 @@ async function dispatchInboundMessage(message: Message): Promise<void> {
   try {
     const acceptedRelay = relay ? trustedRelays.verify(relayInput) ?? undefined : undefined
     if (relay && !acceptedRelay) return
-    // A delivered bot-to-bot tell marks the state dir for its window, so a
-    // tell sent from inside this turn is refused by the owner's CLI. See
-    // tell-turn.ts for why it is a TTL and not a clear-at-end.
-    if (acceptedRelay && isTellPayload(acceptedRelay.payload)) tellTurns.arm()
-    else tellTurns.sweep()
     // The helper that authored a relay reaps its own transport post after
     // gateway delivery. gpt cannot delete another bot's message without broad
     // Manage Messages permission, and silently swallowing that 403 left hex in
