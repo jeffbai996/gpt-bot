@@ -48,3 +48,13 @@ test('an unreadable marker is not active and disarm never throws', () => {
   assert.equal(marker.active(), false)
   marker.disarm('nope')
 })
+
+test('a restart clears turns a previous process recorded', () => {
+  const marker = new TellTurnMarker(dir(), 60_000, () => 1_000_000)
+  marker.arm('msg-1')
+  assert.equal(marker.active(), true)
+  marker.reset()
+  assert.equal(marker.active(), false)
+  assert.equal(existsSync(marker.file), false)
+  marker.reset()   // idempotent; must not throw with nothing to clear
+})

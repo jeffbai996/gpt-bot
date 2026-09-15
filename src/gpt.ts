@@ -733,6 +733,10 @@ client.once('ready', async () => {
     console.error('slash command registration failed:', e)
   }
 
+  // Any tell-originated turn recorded before this process started is dead,
+  // whatever ended it, so its marker must not outlive the restart.
+  tellTurns.reset()
+
   try {
     const n = await pendingPlaceholders.sweep(client)
     if (n) console.error(`swept ${n} interrupted placeholder(s) from a prior run`)

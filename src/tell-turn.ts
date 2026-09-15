@@ -81,4 +81,13 @@ export class TellTurnMarker {
   active(): boolean {
     return Object.keys(this.read().turns).length > 0
   }
+
+  /** Nothing this process started is still running: drop every entry.
+   *
+   * Called at startup. A turn recorded by a previous process is dead however
+   * it ended, so the safety expiry never has to be waited out after a restart
+   * or a crash — which is the only way it could ever block a real ask. */
+  reset(): void {
+    try { unlinkSync(this.file) } catch { /* nothing to clear */ }
+  }
 }
