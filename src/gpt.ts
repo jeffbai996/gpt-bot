@@ -87,7 +87,6 @@ import { PendingEditsStore } from './reactions/pending-edits.ts'
 import { handleReaction } from './reactions/handler.ts'
 import { SummaryStore } from './summarization/store.ts'
 import { SummarizationScheduler } from './summarization/scheduler.ts'
-import { preserveAndDropSession } from './session-rollover.ts'
 import { captureSourceState } from './runtime-doctor.ts'
 import { cleanBotTranscriptContent } from './transcript-ingest.ts'
 import { INTERRUPTED_MARKER, RETRY_PROMPT } from './interruption-label.ts'
@@ -243,19 +242,18 @@ function argDigest(args: Record<string, unknown>, maxLen = 80): string {
 // own prior reasoning/tool context. But Codex counts the WHOLE resumed session
 // as turn input, and `exec resume` has no compaction command — so a long-lived
 // session bloats unboundedly. When the last reported input crosses this ceiling,
-// force a durable channel summary first, then drop the Codex session pointer so
-// THIS turn cold-starts with compact older context + recent Discord history.
+// drop only the Codex session pointer. The next turn cold-starts from the
+// existing durable channel summary plus up to 100 recent Discord messages and
+// squad memory.
 //
-// If summarization is unavailable/fails, rollover still drops only the session
-// pointer (not the Discord-history cutoff), so the next turn can re-ground from
-// recent channel history and squad memory instead of going fully amnesic.
+// Do NOT force a local-LLM summary here. Scheduled summaries already run every
+// 50 new messages, and /gpt compact remains available when an immediate rollup
+// is actually wanted. Coupling provider-session housekeeping to a 27B summary
+// made a tiny two-message rollover saturate the shared GPU after ordinary turns.
 const CODEX_SESSION_MAX_INPUT_TOKENS = Number(
   process.env.GPT_CODEX_MAX_SESSION_INPUT_TOKENS
   ?? process.env.GPT_SESSION_ROLLOVER_TOKENS
   ?? 750_000
-)
-const SESSION_ROLLOVER_SUMMARY_TIMEOUT_MS = Number(
-  process.env.GPT_SESSION_ROLLOVER_SUMMARY_TIMEOUT_MS ?? 30_000
 )
 const CODEX_FALLBACK_MIN_ELAPSED_MS = Number(process.env.GPT_CODEX_FALLBACK_MIN_ELAPSED_MS) || 90_000
 // Keep tool-call headers and stdout/result previews narrow enough that Discord's
@@ -1340,38 +1338,22 @@ async function handleUserMessage(
     queueLiveRender()
   }
 
-  const compactAndDropCodexSession = async (reason: string, inputTokens?: number): Promise<boolean> => {
-    setLiveCompacting(true)
-    try {
-      const result = await preserveAndDropSession({
-        summarizer,
-        channelId,
-        dropSession: id => channelSessions.dropSession(id),
-        timeoutMs: SESSION_ROLLOVER_SUMMARY_TIMEOUT_MS,
-      })
-      const prefix = `[session-rollover] channel ${channelId}: ${reason}`
-        + (inputTokens !== undefined ? ` input=${inputTokens}` : '')
-        + ` >= ${CODEX_SESSION_MAX_INPUT_TOKENS} — `
-      if (result.status === 'compacted') {
-        console.log(prefix + `summarized ${result.messageCount} messages, dropped session; next turn starts fresh`)
-        return true
-      }
-      if (result.status === 'failed') {
-        console.error(`${prefix}summarization failed; preserved session`, result.error)
-      } else {
-        console.error(`${prefix}summarization ${result.status.replace('_', ' ')}; preserved session`)
-      }
-      return false
-    } finally {
-      setLiveCompacting(false)
-    }
+  const rolloverCodexSession = async (reason: string, inputTokens?: number): Promise<boolean> => {
+    const dropped = channelSessions.dropSession(channelId)
+    const prefix = `[session-rollover] channel ${channelId}: ${reason}`
+      + (inputTokens !== undefined ? ` input=${inputTokens}` : '')
+      + ` >= ${CODEX_SESSION_MAX_INPUT_TOKENS} — `
+    console.log(prefix + (dropped
+      ? 'dropped provider session; next turn starts from durable summary + recent history'
+      : 'provider session already absent'))
+    return dropped
   }
   let pendingPostTurnRolloverUsage: number | undefined
   const finishPostTurnRollover = async (): Promise<void> => {
     const rolloverUsage = pendingPostTurnRolloverUsage
     if (rolloverUsage === undefined) return
     pendingPostTurnRolloverUsage = undefined
-    await compactAndDropCodexSession('post-turn', rolloverUsage)
+    await rolloverCodexSession('post-turn', rolloverUsage)
   }
 
   // Live tool trace: start a row as soon as a tool fires, then enrich that same
@@ -1739,7 +1721,7 @@ async function handleUserMessage(
         let resumeSessionId = channelSessions.get(channelId)
         const lastInput = channelSessions.lastUsage(channelId)?.input ?? 0
         if (resumeSessionId && CODEX_SESSION_MAX_INPUT_TOKENS > 0 && lastInput >= CODEX_SESSION_MAX_INPUT_TOKENS) {
-          const dropped = await compactAndDropCodexSession('preflight', lastInput)
+          const dropped = await rolloverCodexSession('preflight', lastInput)
           throwIfStopped()
           if (dropped) resumeSessionId = undefined
         }
@@ -1824,7 +1806,7 @@ async function handleUserMessage(
           }
         }
         // Post-turn rollover still matters for the first turn that crosses the
-        // cap: we cannot know that until Codex reports usage, so compact/drop
+        // cap: we cannot know that until Codex reports usage, so drop
         // after the visible answer and trace-cleanup lease are committed. Session
         // housekeeping must never hold the reply UI hostage.
         if (CODEX_SESSION_MAX_INPUT_TOKENS > 0

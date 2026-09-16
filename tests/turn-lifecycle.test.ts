@@ -135,18 +135,15 @@ test('both rolling-live and full-collapse traces are transient', async () => {
   assert.match(source, /if \(transientTrace && liveTraceMsgs\.length\)/)
 })
 
-test('session rollover cannot block final trace collapse indefinitely', async () => {
+test('session rollover never invokes the local summarizer', async () => {
   const source = await readFile(new URL('../src/gpt.ts', import.meta.url), 'utf8')
-  const start = source.indexOf('const compactAndDropCodexSession')
+  const start = source.indexOf('const rolloverCodexSession')
   const end = source.indexOf('\n  // Live tool trace:', start)
   const rollover = source.slice(start, end)
 
   assert.ok(start >= 0)
-  assert.match(rollover, /preserveAndDropSession\(/)
-  assert.match(rollover, /SESSION_ROLLOVER_SUMMARY_TIMEOUT_MS/)
-  assert.match(rollover, /channelSessions\.dropSession\(id\)/)
-  assert.match(rollover, /setLiveCompacting\(true\)/)
-  assert.match(rollover, /setLiveCompacting\(false\)/)
+  assert.match(rollover, /channelSessions\.dropSession\(channelId\)/)
+  assert.doesNotMatch(rollover, /summarizer|runForChannel|setLiveCompacting/)
 })
 
 test('post-turn rollover runs only after the reply and trace cleanup are armed', async () => {
@@ -160,7 +157,7 @@ test('post-turn rollover runs only after the reply and trace cleanup are armed',
   assert.ok(renderStart > resultStart)
   assert.ok(cleanupStart > renderStart)
   assert.ok(cleanupEnd > cleanupStart)
-  assert.doesNotMatch(source.slice(resultStart, renderStart), /await compactAndDropCodexSession/)
+  assert.doesNotMatch(source.slice(resultStart, renderStart), /await rolloverCodexSession/)
   assert.match(source.slice(resultStart, renderStart), /pendingPostTurnRolloverUsage\s*=/)
   assert.match(source.slice(cleanupStart, cleanupEnd), /scheduleTransientTraceCleanup/)
   assert.match(source.slice(cleanupStart, cleanupEnd), /ingestTranscriptRow/)
