@@ -12,6 +12,7 @@ import {
   nextHeartbeatVerb,
   pickHeartbeatGlyph,
   pickHeartbeatVerb,
+  resolveHeartbeatDelay,
   shouldRenderHeartbeat,
 } from '../src/live-ui.ts'
 
@@ -36,9 +37,12 @@ test('keeps the verb stable for four frames before advancing it', () => {
   assert.deepEqual(heartbeatVisual(4, 'cogitating'), { glyph: '✷', verb: 'pondering' })
 })
 
-test('delays the heartbeat row until the turn has run for 60 seconds', () => {
-  assert.equal(shouldRenderHeartbeat(59_999, 0, 60_000), false)
-  assert.equal(shouldRenderHeartbeat(120_000, 60_000, 60_000), true)
+test('delays the heartbeat row until the turn has run for three minutes', () => {
+  const delay = resolveHeartbeatDelay(undefined)
+  assert.equal(delay, 180_000)
+  assert.equal(shouldRenderHeartbeat(179_999, 0, delay), false)
+  assert.equal(shouldRenderHeartbeat(180_000, 60_000, delay), true)
+  assert.equal(resolveHeartbeatDelay('240000'), 240_000)
 })
 
 test('long active turns retain a heartbeat', () => {

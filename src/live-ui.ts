@@ -100,6 +100,12 @@ export function shouldRenderHeartbeat(
   return elapsedMs >= delayMs
 }
 
+/** Keep the stale-work indicator quiet during normal long-running turns. */
+export function resolveHeartbeatDelay(raw: string | undefined): number {
+  const parsed = Number.parseInt(raw ?? '', 10)
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 180_000
+}
+
 function formatDuration(ms: number): string {
   const seconds = Math.round(ms / 1000)
   return seconds < 60

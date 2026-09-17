@@ -113,6 +113,7 @@ import {
   heartbeatVisual,
   latestReasoningHeadline,
   pickHeartbeatVerb,
+  resolveHeartbeatDelay,
   shouldRenderHeartbeat,
 } from './live-ui.ts'
 import {
@@ -1182,7 +1183,9 @@ async function handleUserMessage(
   // animated placeholder. The typing heartbeat re-fires every 9s because
   // Discord auto-expires the indicator after ~10s.
   const PLACEHOLDER_DELAY_MS = parseInt(process.env.GPT_PLACEHOLDER_DELAY_MS ?? '2500', 10)
-  const HEARTBEAT_DELAY_MS = parseInt(process.env.GPT_CODEX_HEARTBEAT_DELAY_MS ?? '60000', 10)
+  // A one-minute footer looks like a stale-work alarm on ordinary long Codex
+  // turns. Let the turn earn that visual noise before showing it.
+  const HEARTBEAT_DELAY_MS = resolveHeartbeatDelay(process.env.GPT_CODEX_HEARTBEAT_DELAY_MS)
   let placeholderTimer: ReturnType<typeof setTimeout> | null = null
   let typingInterval: ReturnType<typeof setInterval> | null = null
   if (!targetMessage && message.channel.isSendable()) {
