@@ -77,9 +77,12 @@ export class MemoryStore {
       findRowId: any
       insertVss: any
       search: any
+      searchAll: any
       fetchSince: any
       upsertSummary: any
       getSummary: any
+      channelActivity: any
+      allSummaries: any
     }
   ) {}
 
@@ -133,6 +136,14 @@ export class MemoryStore {
         WHERE vss_search(v.embedding, vss_search_params(?, ?))
           AND m.channel_id = ?
       `),
+      // Same search with no channel filter — cross-channel awareness reads this
+      // and drops the rows its caller is not allowed to see.
+      searchAll: db.prepare(`
+        SELECT m.id, m.channel_id, m.author_id, m.author_name, m.content, m.timestamp, v.distance
+        FROM vss_messages v
+        JOIN messages m ON v.rowid = m.rowid
+        WHERE vss_search(v.embedding, vss_search_params(?, ?))
+      `),
       fetchSince: db.prepare(`
         SELECT id, channel_id, author_id, author_name, content, timestamp
         FROM messages
@@ -152,6 +163,25 @@ export class MemoryStore {
       getSummary: db.prepare(`
         SELECT channel_id, summary, last_summarized_message_id, updated_at
         FROM conversation_summaries WHERE channel_id = ?
+      `),
+      // Newest message per channel plus that channel's total, for the
+      // other-channels digest. Snowflake ids are monotonic, so MAX(id) is the
+      // newest row without trusting the stored timestamp's format.
+      channelActivity: db.prepare(`
+        SELECT m.channel_id, m.author_name, m.content, m.timestamp, newest.n AS message_count
+        FROM messages m
+        JOIN (
+          SELECT channel_id, MAX(CAST(id AS INTEGER)) AS max_id, COUNT(*) AS n
+          FROM messages GROUP BY channel_id
+        ) newest
+          ON newest.channel_id = m.channel_id AND CAST(m.id AS INTEGER) = newest.max_id
+        WHERE m.channel_id != ?
+        ORDER BY CAST(m.id AS INTEGER) DESC
+        LIMIT ?
+      `),
+      allSummaries: db.prepare(`
+        SELECT channel_id, summary, last_summarized_message_id, updated_at
+        FROM conversation_summaries
       `)
     })
   }
@@ -186,6 +216,22 @@ export class MemoryStore {
   searchMessages(channelId: string, queryEmbedding: number[], limit: number = 10): SearchResult[] {
     const queryJson = JSON.stringify(queryEmbedding)
     return this.statements.search.all(queryJson, limit, channelId) as SearchResult[]
+  }
+
+  /** Nearest stored messages across EVERY channel. Callers must scope the result. */
+  searchAllMessages(queryEmbedding: number[], limit: number = 10): SearchResult[] {
+    const queryJson = JSON.stringify(queryEmbedding)
+    return this.statements.searchAll.all(queryJson, limit) as SearchResult[]
+  }
+
+  /** Newest message + message count per channel, excluding one channel. */
+  channelActivity(excludeChannelId: string, limit: number = 20): ChannelActivityRow[] {
+    return this.statements.channelActivity.all(excludeChannelId, limit) as ChannelActivityRow[]
+  }
+
+  /** Every channel's rolling summary, for the cross-channel digest. */
+  allSummaries(): SummaryRow[] {
+    return this.statements.allSummaries.all() as SummaryRow[]
   }
 
   fetchMessagesSince(channelId: string, sinceMessageId: string | null, limit: number): MessageRow[] {
@@ -230,6 +276,14 @@ export class MemoryStore {
   close(): void {
     try { this.db.close() } catch { /* idempotent */ }
   }
+}
+
+export interface ChannelActivityRow {
+  channel_id: string
+  author_name: string
+  content: string
+  timestamp: string
+  message_count: number
 }
 
 export interface SummaryRow {
