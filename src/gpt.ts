@@ -77,6 +77,7 @@ import { channelSessions } from './channel-sessions.ts'
 import { formatUsageCounter } from './usage-counter.ts'
 import { buildDefaultRegistry } from './tools/index.ts'
 import { EMBEDDING_MODEL, MemoryStore, embed } from './memory.ts'
+import { crossChannelEnabled, formatCrossChannelContext } from './cross-channel.ts'
 import { shouldEmbed } from './embed-throttle.ts'
 import { PinnedFactsStore } from './pinned-facts.ts'
 import { PendingPlaceholders } from './pending-placeholders.ts'
@@ -390,7 +391,7 @@ const openaiRaw = new OpenAI({ apiKey: OPENAI_KEY })
 // rollup; pointing them at the local Ollama box makes them free. `apiKey` is a
 // throwaway — Ollama ignores it. Mirrors llm-bot's memory backend. See
 // memory.ts EMBEDDING_MODEL and GPT_SUMMARIZATION_MODEL in the env.
-const OLLAMA_URL = process.env.OLLAMA_URL || 'http://100.94.27.37:11434'
+const OLLAMA_URL = process.env.OLLAMA_URL || 'http://127.0.0.1:11434'
 const ollamaClient = new OpenAI({ apiKey: 'ollama', baseURL: OLLAMA_URL + '/v1' })
 
 // Embeddings run on THIS host's own Ollama, never the remote GPU box. That box
@@ -399,9 +400,11 @@ const ollamaClient = new OpenAI({ apiKey: 'ollama', baseURL: OLLAMA_URL + '/v1' 
 // /v1/embeddings there and getting 404, silently, roughly every 40s, for as
 // long as this has been deployed. Memory ingestion has not been working.
 //
-// Kept as a SEPARATE client rather than repointing OLLAMA_URL, because that URL
-// also carries summarization and the doctor model list, which do belong on the
-// remote box. Mirrors llm-bot's LLM_EMBEDDING_OLLAMA_URL split.
+// Kept as a SEPARATE client, though as of 2026-09-15 both URLs resolve to the
+// same place: this host's own GPU is the inference box now, and the machine
+// that used to serve chat is a gaming rig first. The split stays because it is
+// the knob that lets embeddings and chat live on different cards again without
+// a code change. Mirrors llm-bot's LLM_EMBEDDING_OLLAMA_URL.
 const LOCAL_OLLAMA_URL = process.env.GPT_LOCAL_OLLAMA_URL || 'http://127.0.0.1:11434'
 const localOllama = new OpenAI({ apiKey: 'ollama', baseURL: LOCAL_OLLAMA_URL + '/v1' })
 
@@ -516,6 +519,17 @@ function ingestMessage(message: Message, content = message.content, allowEmbeddi
   }, allowEmbedding)
 }
 
+/** Human-readable name for a channel id — "#dev", "a DM", or the bare id when
+ *  the channel isn't cached. Used to label cross-channel context so the model
+ *  says "in #ops" instead of quoting a snowflake. */
+function channelLabel(channelId: string): string {
+  const channel = client.channels.cache.get(channelId)
+  if (!channel) return `channel ${channelId}`
+  if (channel.isDMBased()) return 'a DM'
+  const name = (channel as { name?: string }).name
+  return name ? `#${name}` : `channel ${channelId}`
+}
+
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -539,11 +553,21 @@ function boundedQueueLimit(raw: string | undefined, fallback: number, hardMax: n
   return Number.isSafeInteger(parsed) && parsed > 0 ? Math.min(parsed, hardMax) : fallback
 }
 const MAX_QUEUED_PER_CHANNEL = boundedQueueLimit(process.env.GPT_MAX_QUEUED_PER_CHANNEL, 8, 32)
-const MAX_ACTIVE_CHANNELS = boundedQueueLimit(process.env.GPT_MAX_ACTIVE_CHANNELS, 4, 16)
+// Raised 4 -> 5 alongside MAX_GLOBAL_TURNS. These two have to move together:
+// a channel runs at most one turn at a time, so with only 4 channels admitted
+// the 5th global slot is unreachable and the bump would be decoration.
+const MAX_ACTIVE_CHANNELS = boundedQueueLimit(process.env.GPT_MAX_ACTIVE_CHANNELS, 5, 16)
 const MAX_OUTSTANDING_PER_USER = boundedQueueLimit(process.env.GPT_MAX_OUTSTANDING_PER_USER, 4, 8)
 const MAX_DAILY_TURNS_PER_USER = boundedQueueLimit(process.env.GPT_MAX_DAILY_TURNS_PER_USER, 200, 500)
 const MAX_DAILY_TURNS_GLOBAL = boundedQueueLimit(process.env.GPT_MAX_DAILY_TURNS_GLOBAL, 500, 2_000)
-const MAX_GLOBAL_TURNS = boundedQueueLimit(process.env.GPT_MAX_GLOBAL_TURNS, 2, 4)
+// 2 active model jobs process-wide was set when this was the only admission
+// layer and nobody had measured the box. It has 12 cores and ~16 GB of RAM
+// headroom, and the turn itself is almost all waiting on a remote API —
+// the local cost of a turn is a socket and some JSON, not a model. Raised to 5
+// (Jeff 2026-09-16: "raise each's cap to 5 and we'll call it at that for
+// now"). The hard max is 8 so the env var has somewhere to go without another
+// edit; the memory hysteresis below is still what actually stops a runaway.
+const MAX_GLOBAL_TURNS = boundedQueueLimit(process.env.GPT_MAX_GLOBAL_TURNS, 5, 8)
 const configuredHighWater = Number(process.env.GPT_MEMORY_HIGH_WATER_MB)
 const configuredLowWater = Number(process.env.GPT_MEMORY_LOW_WATER_MB)
 const MEMORY_HIGH_WATER_BYTES = (Number.isFinite(configuredHighWater) && configuredHighWater > 0
@@ -1038,6 +1062,27 @@ async function handleUserMessage(
     const threadText = formatThreadContext(threadContext)
     const richText = formatRichContext(message)
     extraText = [quotedReply, threadText, richText, extraText].filter(Boolean).join('\n\n')
+  }
+
+  // Cross-channel awareness: sessions/history stay per-channel, but each turn
+  // gets a read-only digest of the other channels plus semantic matches drawn
+  // from all of them, so "like I said in the other channel" resolves. Failures
+  // skip silently — this is a bonus, never a turn-blocker.
+  if (memoryStore && crossChannelEnabled() && userText.trim()) {
+    try {
+      const queryEmbedding = await embed(localOllama, userText)
+      const crossChannel = formatCrossChannelContext({
+        activity: memoryStore.channelActivity(channelId, 20),
+        summaries: new Map(memoryStore.allSummaries().map(row => [row.channel_id, row.summary])),
+        hits: queryEmbedding ? memoryStore.searchAllMessages(queryEmbedding, 32) : [],
+        visibleChannelIds: access.enabledChannelIds(),
+        currentChannelId: channelId,
+        label: id => channelLabel(id),
+      })
+      if (crossChannel) extraText = (extraText ? extraText + '\n\n' : '') + crossChannel
+    } catch (e) {
+      console.error('[cross-channel] context build failed:', e instanceof Error ? e.message : e)
+    }
   }
 
   // The expansion preamble is just a small steer appended to extraText so

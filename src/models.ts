@@ -3,11 +3,14 @@
 // channels also use this model normally.
 export const DEFAULT_OPENAI_MODEL = 'gpt-5.6-sol'
 export const DEFAULT_CODEX_MODEL = 'gpt-5.6-sol'
-// Summarization runs on THIS host's own GPU, not the remote chat box: it is a
-// background chore that fires on a message threshold, and the remote box only
-// holds a model when it has been loaded deliberately. A 14B handles history
-// compression well and coexists with the embedder on a 24GB card.
-export const DEFAULT_SUMMARIZATION_MODEL = 'qwen2.5:14b'
+// Summarization runs on THIS host's own GPU: a background chore that fires on
+// a message threshold. It used to name a 14B so it could coexist with the
+// embedder on the 24GB card — but "coexist" meant the 14B and whatever else
+// wanted the GPU took turns evicting each other, re-reading gigabytes off the
+// SSD every swap. The inference host now pins ONE generative model
+// (qwen3.8:27b, 32k ctx) next to bge-m3 and holds both indefinitely, so the
+// cheap move is the model already resident, not a second set of weights.
+export const DEFAULT_SUMMARIZATION_MODEL = 'qwen3.8:27b'
 
 export const OPENAI_MODELS = [
   'gpt-6-astra',
