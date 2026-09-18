@@ -147,8 +147,8 @@ test('conversational images attach the same token and cost footer as slash image
   const { readFile } = await import('node:fs/promises')
   const source = await readFile(new URL('../src/gpt.ts', import.meta.url), 'utf8')
   assert.match(source, /generatedImageFooter = formatImageFooter\(image\)/)
-  // `sent` is result.files.slice(0, 10), bound one line up so the delivery
-  // ledger can record exactly what Discord accepted.
-  assert.match(source, /const sent = result\.files\.slice\(0, 10\)/)
-  assert.match(source, /content: generatedImageFooter \|\| undefined,\s+files: sent,/)
+  // Generated-image metadata belongs in the answer that carries the file,
+  // rather than a second, attachment-only Discord message.
+  assert.match(source, /generatedImageFooter \? `\\n\\n\$\{generatedImageFooter\}` : ''/)
+  assert.match(source, /replyOrSend\(message, firstWithThought, !actor, files\)/)
 })

@@ -12,6 +12,16 @@ export function codexFallbackWaitMs(error: unknown, minimumElapsedMs: number): n
   return Math.max(0, minimumElapsedMs - error.afterMs)
 }
 
+/** A visible boundary between a failed agent turn and the tool-less API report. */
+export function formatCodexFailurePostmortemFooter(
+  failure: 'interrupted' | 'errored',
+): string {
+  const cause = failure === 'interrupted'
+    ? 'Codex was interrupted'
+    : 'Codex ended without a usable final answer'
+  return `\n\n⚠️ *API postmortem only — ${cause}. This did not continue the task.*`
+}
+
 const POSTMORTEM_SYSTEM_PROMPT = `You are the emergency reporting path for a failed Codex turn.
 
 Your only job is to deliver a concise, evidence-bound postmortem explaining what happened to Codex. The original task remains unfinished and belongs to Codex.

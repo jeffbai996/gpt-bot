@@ -4,6 +4,7 @@ import test from 'node:test'
 import {
   buildCodexFailurePostmortemRequest,
   codexFallbackWaitMs,
+  formatCodexFailurePostmortemFooter,
 } from '../src/codex-fallback.ts'
 import { CodexInterruptedError, CodexProcessDiedError } from '../src/codex-chat.ts'
 
@@ -14,6 +15,17 @@ test('waits out the fallback grace period after a confirmed codex death', () => 
 
 test('does not API-fallback for errors that do not confirm codex terminated', () => {
   assert.equal(codexFallbackWaitMs(new Error('output parse failed'), 90_000), null)
+})
+
+test('postmortems carry an explicit API-only footer', () => {
+  assert.equal(
+    formatCodexFailurePostmortemFooter('errored'),
+    '\n\n⚠️ *API postmortem only — Codex ended without a usable final answer. This did not continue the task.*',
+  )
+  assert.equal(
+    formatCodexFailurePostmortemFooter('interrupted'),
+    '\n\n⚠️ *API postmortem only — Codex was interrupted. This did not continue the task.*',
+  )
 })
 
 test('confirmed timeout builds a postmortem-only API request without tools or attachments', () => {

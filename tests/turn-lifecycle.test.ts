@@ -165,8 +165,8 @@ test('post-turn rollover runs only after the reply and trace cleanup are armed',
 
 test('silent and file-only completions also arm transient trace cleanup', async () => {
   const source = await readFile(new URL('../src/gpt.ts', import.meta.url), 'utf8')
-  const silentStart = source.indexOf("if (!body.trim() && !result.files?.length)")
-  const fileOnlyStart = source.indexOf("if (!body.trim() && result.files?.length)", silentStart)
+  const silentStart = source.indexOf("if (!body.trim() && !files.length)")
+  const fileOnlyStart = source.indexOf("if (!body.trim() && files.length)", silentStart)
   const normalStart = source.indexOf("const willThinking", fileOnlyStart)
   const silentBranch = source.slice(silentStart, fileOnlyStart)
   const fileOnlyBranch = source.slice(fileOnlyStart, normalStart)

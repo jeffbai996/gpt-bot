@@ -48,6 +48,7 @@ import {
 import {
   buildCodexFailurePostmortemRequest,
   codexFallbackWaitMs,
+  formatCodexFailurePostmortemFooter,
   isCodexFailurePostmortemEligible,
 } from './codex-fallback.ts'
 import { fetchHistory, formatHistoryForOpenAI, selectPriorImages, type HistoryMessage } from './history.ts'
@@ -168,25 +169,31 @@ async function replyOrSend(
   message: Message,
   content: string,
   replyToInbound = true,
+  files: string[] = [],
 ): Promise<Message | null> {
+  const payload = {
+    content,
+    ...(files.length ? { files } : {}),
+    allowedMentions: { repliedUser: false },
+  }
   if (!replyToInbound) {
     if (!message.channel.isSendable()) return null
     try {
-      return await message.channel.send(content)
+      return await message.channel.send(payload)
     } catch (sendErr) {
       console.error('[discord] send failed:', sendErr)
       return null
     }
   }
   try {
-    return await message.reply({ content, allowedMentions: { repliedUser: false } })
+    return await message.reply(payload)
   } catch (err) {
     if (!isBadReplyReference(err)) {
       console.error('[discord] reply failed:', err)
     }
     if (!message.channel.isSendable()) return null
     try {
-      return await message.channel.send(content)
+      return await message.channel.send(payload)
     } catch (sendErr) {
       console.error('[discord] fallback send failed:', sendErr)
       return null
@@ -2101,9 +2108,24 @@ async function handleUserMessage(
     // closeDanglingInlineCode pass rather than replacing it.
     const degradedNotice = historyFetchFailed ? '⚠️ *replying with reduced context — history fetch failed*\n\n' : ''
     const replyBody = closeDanglingInlineCode((result.reply ?? '').trim())
-    const body = degradedNotice + stripToolTraceCard(headingsToBold(replyBody)) + verbose + (verbose ? '\n\u200b' : '')
+    const generatedImageMetadata = generatedImageFooter ? `\n\n${generatedImageFooter}` : ''
+    const postmortemFooter = codexFailureLifecycle
+      ? formatCodexFailurePostmortemFooter(codexFailureLifecycle)
+      : ''
+    const body = degradedNotice + stripToolTraceCard(headingsToBold(replyBody))
+      + verbose + (verbose ? '\n\u200b' : '') + generatedImageMetadata + postmortemFooter
+    const files = result.files?.slice(0, 10) ?? []
+    const markDeliveredCodexImages = (sent: string[]) => {
+      // The Discord call above is the delivery authority. Marking earlier would
+      // turn a transient upload failure into a permanently dropped image.
+      if (!result.threadId || !result.codexImages?.length) return
+      const delivered = result.codexImages.filter(file => sent.includes(file))
+      if (!delivered.length) return
+      deliveredImages.mark(result.threadId, delivered.map(file => path.basename(file)))
+      console.log(`[codex-image] delivered ${delivered.length} image(s) for thread ${result.threadId}`)
+    }
 
-    if (!body.trim() && !result.files?.length) {
+    if (!body.trim() && !files.length) {
       await lifecycle.transition(codexFailureLifecycle ?? 'silenced')
       if (workMessage && !targetMessage) {
         try { await workMessage.delete() } catch {}
@@ -2113,13 +2135,14 @@ async function handleUserMessage(
       await finishPostTurnRollover()
       return
     }
-    if (!body.trim() && result.files?.length) {
+    if (!body.trim() && files.length) {
       if (workMessage && !targetMessage) {
         try { await workMessage.delete() } catch {}
         workMessage = null
       }
       if (message.channel.isSendable()) {
-        await message.channel.send({ files: result.files.slice(0, 10) })
+        await message.channel.send({ files })
+        markDeliveredCodexImages(files)
       }
       await lifecycle.transition(codexFailureLifecycle ?? 'replied')
       scheduleNarrationCleanup()
@@ -2217,12 +2240,21 @@ async function handleUserMessage(
     for (let i = 0; i < parts.length; i++) {
       if (i === 0) {
         if (workMessage && !targetMessage) {
-          await workMessage.edit(firstWithThought)
-          mergedMsg = workMessage
+          // A placeholder has no attachments, but a regenerated reply may.
+          // Preserve the latter while adding this turn's files to the actual
+          // answer, rather than posting an orphaned “output attached” message.
+          mergedMsg = await workMessage.edit({
+            content: firstWithThought,
+            ...(files.length ? { files } : {}),
+            ...(workMessage.attachments.size
+              ? { attachments: [...workMessage.attachments.values()] }
+              : {}),
+          })
           workMessage = null
         } else {
-          mergedMsg = await replyOrSend(message, firstWithThought, !actor)
+          mergedMsg = await replyOrSend(message, firstWithThought, !actor, files)
         }
+        if (mergedMsg && files.length) markDeliveredCodexImages(files)
         bottomContentMessage = mergedMsg
       } else if (message.channel.isSendable()) {
         bottomContentMessage = await message.channel.send(parts[i])
@@ -2246,32 +2278,6 @@ async function handleUserMessage(
         timer.unref?.()
       } else {
         settleThinking()
-      }
-    }
-    // Attach any screenshots a tool produced this turn (Playwright browser_take_
-    // screenshot → saved to disk → path collected on result.files). Sent as a
-    // follow-up message so it works regardless of the edit-vs-reply branch above,
-    // and so the visual lands right under the text. Discord caps 10 files/msg.
-    if (result.files?.length && message.channel.isSendable()) {
-      const sent = result.files.slice(0, 10)
-      try {
-        bottomContentMessage = await message.channel.send({
-          content: generatedImageFooter || undefined,
-          files: sent,
-        })
-        // Record codex's own image_gen output as delivered ONLY now — the send
-        // above is the thing that makes it true. A throw leaves the ledger
-        // untouched so the next turn tries again instead of dropping the
-        // picture for good.
-        if (result.threadId && result.codexImages?.length) {
-          const delivered = result.codexImages.filter(file => sent.includes(file))
-          if (delivered.length) {
-            deliveredImages.mark(result.threadId, delivered.map(file => path.basename(file)))
-            console.log(`[codex-image] delivered ${delivered.length} image(s) for thread ${result.threadId}`)
-          }
-        }
-      } catch (e) {
-        console.error('screenshot attach failed:', e instanceof Error ? e.message : e)
       }
     }
     if (message.channel.isSendable()) {

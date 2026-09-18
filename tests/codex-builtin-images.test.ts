@@ -61,11 +61,19 @@ test('a thread that never drew anything yields nothing, not an error', async () 
 
 test('delivery is recorded only after Discord accepts the upload', async () => {
   const source = await readFile(new URL('../src/gpt.ts', import.meta.url), 'utf8')
-  const send = source.indexOf('bottomContentMessage = await message.channel.send({')
-  const mark = source.indexOf('deliveredImages.mark(result.threadId', send)
-  const catchAt = source.indexOf('} catch (e) {', send)
-  assert.ok(send > 0 && mark > send, 'the ledger is written after the send call')
-  assert.ok(mark < catchAt, 'and inside the try, so a failed send retries next turn')
+  const render = source.slice(
+    source.indexOf('const firstWithThought ='),
+    source.indexOf('// Transient thought line:', source.indexOf('const firstWithThought =')),
+  )
+  const upload = render.indexOf('replyOrSend(message, firstWithThought, !actor, files)')
+  assert.ok(upload >= 0, 'the answer itself receives the files')
+  assert.match(render, /if \(mergedMsg && files\.length\) markDeliveredCodexImages\(files\)/)
+  const delivery = source.slice(
+    source.indexOf('const markDeliveredCodexImages ='),
+    source.indexOf('if (!body.trim()', source.indexOf('const markDeliveredCodexImages =')),
+  )
+  assert.match(delivery, /deliveredImages\.mark\(result\.threadId/)
+  assert.doesNotMatch(render, /bottomContentMessage = await message\.channel\.send\(\{[\s\S]*files:/)
 })
 
 test('codex-owned output is attached but never swept up as temporary', async () => {
