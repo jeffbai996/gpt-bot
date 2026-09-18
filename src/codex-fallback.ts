@@ -42,9 +42,14 @@ export function buildCodexFailurePostmortemRequest(input: {
   recentTools?: string[]
 }): RespondInput {
   const { base, error } = input
+  // A clean Codex exit which omitted its final answer is not a crash. Keeping
+  // it distinct prevents the API reporter from inventing a dead process when
+  // the actual evidence is simply an empty terminal response.
   const failureType = error instanceof CodexInterruptedError
     ? `${error.timeoutKind}_timeout`
-    : 'process_died'
+    : error.message.includes('without an authoritative final answer')
+      ? 'no_authoritative_final'
+      : 'process_died'
   const record = {
     failureType,
     elapsedMs: error.afterMs,

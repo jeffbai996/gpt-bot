@@ -78,3 +78,19 @@ test('confirmed process death is reported as a process failure, not task complet
   assert.match(request.userMessage, /codex exited code=1 signal=none/)
   assert.match(request.systemPrompt, /The original task remains unfinished/i)
 })
+
+test('an empty Codex final is reported accurately rather than as a dead process', () => {
+  const request = buildCodexFailurePostmortemRequest({
+    base: {
+      systemPrompt: 'normal prompt',
+      history: [],
+      userMessage: 'do the work',
+      userName: 'alice',
+      model: 'gpt-5.6-sol',
+    },
+    error: new CodexProcessDiedError(42_000, 'codex exited without an authoritative final answer (lines=89)'),
+  })
+
+  assert.match(request.userMessage, /no_authoritative_final/)
+  assert.doesNotMatch(request.userMessage, /"failureType": "process_died"/)
+})
