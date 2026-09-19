@@ -79,6 +79,7 @@ import { formatUsageCounter } from './usage-counter.ts'
 import { buildDefaultRegistry } from './tools/index.ts'
 import { EMBEDDING_MODEL, MemoryStore, embed } from './memory.ts'
 import { crossChannelEnabled, formatCrossChannelContext } from './cross-channel.ts'
+import { crosspostedDiscordMessages, shouldQuietCrosspostReceipt } from './crosspost.ts'
 import { shouldEmbed } from './embed-throttle.ts'
 import { PinnedFactsStore } from './pinned-facts.ts'
 import { PendingPlaceholders } from './pending-placeholders.ts'
@@ -357,6 +358,11 @@ const APP_ID: string = process.env.DISCORD_APP_ID
 const OPENAI_KEY: string = process.env.OPENAI_API_KEY
 const DEFAULT_MODEL: string = process.env.GPT_MODEL || DEFAULT_OPENAI_MODEL
 const SESSION_SECURITY_EPOCH = 'history-auth-v1-2026-08-25'
+const CROSSPOST_COMPLETION_INSTRUCTION =
+  '[Cross-channel delivery: when you intentionally post the substantive answer to a different Discord channel ' +
+  'with discord_send or discord_reply, first add 🔀 to the new destination message with discord_react. Then make ' +
+  'your final reply exactly [[crossposted]] so the host keeps this source channel quiet. Use this only when nothing ' +
+  'else is owed here.]'
 let ADMIN_USER_ID: string
 try {
   ADMIN_USER_ID = requireAdminUserId(process.env.DISCORD_ADMIN_USER_ID)
@@ -551,6 +557,19 @@ const client = new Client({
   ],
   partials: [Partials.Channel, Partials.Message, Partials.User, Partials.Reaction]
 })
+
+async function markCrosspostedMessages(posts: ReturnType<typeof crosspostedDiscordMessages>): Promise<void> {
+  for (const post of posts) {
+    try {
+      const channel = await client.channels.fetch(post.channelId)
+      if (!channel?.isTextBased()) continue
+      const message = await channel.messages.fetch(post.messageId)
+      await message.react('🔀')
+    } catch (error) {
+      console.error(`[crosspost] could not mark ${post.channelId}/${post.messageId}:`, error)
+    }
+  }
+}
 
 const shutdownGate = new ShutdownGate()
 const activeAgentViews = new Map<string, (agents: CodexAgentSnapshot[]) => Promise<void>>()
@@ -1787,7 +1806,7 @@ async function handleUserMessage(
           userName,
           reasoningEffort: flags.reasoning,
           codexModel: flags.codexModel,
-          extraText,
+          extraText: [extraText, CROSSPOST_COMPLETION_INSTRUCTION].filter(Boolean).join('\n\n'),
           imagePaths,
           channelId,
           turnGeneration,
@@ -1839,6 +1858,9 @@ async function handleUserMessage(
           result = retry
         }
         result.reply = mergeCompletionReplies(completionReplies)
+        const crossposts = crosspostedDiscordMessages(result.toolCalls, channelId)
+        if (crossposts.length) await markCrosspostedMessages(crossposts)
+        if (shouldQuietCrosspostReceipt(result.reply, crossposts)) result.reply = ''
         if (result.threadId) channelSessions.set(channelId, result.threadId)
         // App-server usage is already the sum of every model roundtrip in this
         // turn. Only legacy resumed CLI sessions report a cumulative snapshot
