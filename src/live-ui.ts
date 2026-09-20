@@ -160,9 +160,12 @@ export function formatLiveWorkMessage({
   if (!cleanDetail) return heading + suffix
 
   const prefix = `${heading}\n`
+  // Live narration is status, not answer text. Keep every line inside Discord's
+  // quote treatment so it cannot read like a premature bot reply.
+  const quotedDetail = cleanDetail.split(/\r?\n/).map(line => line ? `> ${line}` : '>').join('\n')
   const available = Math.max(1, maxLength - prefix.length - suffix.length)
-  const clippedDetail = cleanDetail.length > available
-    ? cleanDetail.slice(0, Math.max(0, available - 1)) + '…'
-    : cleanDetail
+  const clippedDetail = quotedDetail.length > available
+    ? quotedDetail.slice(0, Math.max(0, available - 1)) + '…'
+    : quotedDetail
   return prefix + clippedDetail + suffix
 }
