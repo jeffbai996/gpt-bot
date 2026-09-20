@@ -8,7 +8,6 @@ export interface CrosspostedDiscordMessage {
 }
 
 const DISCORD_POST_TOOL = /(?:^|[._-])discord_(?:send|reply)$/
-const DELIVERY_RECEIPT = /^Replied in `[^`]+` \(`\d{17,20}`\), message `\d{17,20}`\.$/
 
 function successfulDiscordPost(call: ToolCall): CrosspostedDiscordMessage | null {
   if (call.failed || !DISCORD_POST_TOOL.test(call.name)) return null
@@ -38,11 +37,16 @@ export function crosspostedDiscordMessages(
   })
 }
 
-/** A delivery receipt adds no value in the origin after the destination is marked. */
+/**
+ * A successful crosspost is the durable answer.  Never leave a second receipt
+ * (or a model-written acknowledgement) in the origin: the 🔀 reaction is its
+ * only UI there.  The explicit signal remains a defensive no-op if a model
+ * emits it after a failed send.
+ */
 export function shouldQuietCrosspostReceipt(
   reply: string,
   crossposts: readonly CrosspostedDiscordMessage[],
 ): boolean {
   const body = reply.trim()
-  return body === CROSSPOST_DONE_SIGNAL || (crossposts.length > 0 && DELIVERY_RECEIPT.test(body))
+  return body === CROSSPOST_DONE_SIGNAL || crossposts.length > 0
 }

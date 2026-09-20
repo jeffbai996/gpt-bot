@@ -360,9 +360,8 @@ const DEFAULT_MODEL: string = process.env.GPT_MODEL || DEFAULT_OPENAI_MODEL
 const SESSION_SECURITY_EPOCH = 'history-auth-v1-2026-08-25'
 const CROSSPOST_COMPLETION_INSTRUCTION =
   '[Cross-channel delivery: when you intentionally post the substantive answer to a different Discord channel ' +
-  'with discord_send or discord_reply, first add 🔀 to the new destination message with discord_react. Then make ' +
-  'your final reply exactly [[crossposted]] so the host keeps this source channel quiet. Use this only when nothing ' +
-  'else is owed here.]'
+  'with discord_send or discord_reply, make your final reply exactly [[crossposted]]. The host adds 🔀 to the ' +
+  'destination and keeps this source channel quiet. Use this only when nothing else is owed here.]'
 let ADMIN_USER_ID: string
 try {
   ADMIN_USER_ID = requireAdminUserId(process.env.DISCORD_ADMIN_USER_ID)
@@ -1764,6 +1763,7 @@ async function handleUserMessage(
     // dead Codex child and can only report a postmortem; it never continues the
     // task. Explicit API-engine channels still receive the normal tool-capable
     // request. Kill switch: GPT_CODEX_CHAT=0.
+    const crosspostExtraText = [extraText, CROSSPOST_COMPLETION_INSTRUCTION].filter(Boolean).join('\n\n')
     const apiInput: RespondInput = {
       systemPrompt,
       history,
@@ -1772,7 +1772,7 @@ async function handleUserMessage(
       model,
       reasoningEffort: apiEffort(flags.reasoning),
       imageParts,
-      extraText,
+      extraText: crosspostExtraText,
       toolRegistry,
       channelId,
       userId,
@@ -1806,7 +1806,7 @@ async function handleUserMessage(
           userName,
           reasoningEffort: flags.reasoning,
           codexModel: flags.codexModel,
-          extraText: [extraText, CROSSPOST_COMPLETION_INSTRUCTION].filter(Boolean).join('\n\n'),
+          extraText: crosspostExtraText,
           imagePaths,
           channelId,
           turnGeneration,
@@ -1858,9 +1858,6 @@ async function handleUserMessage(
           result = retry
         }
         result.reply = mergeCompletionReplies(completionReplies)
-        const crossposts = crosspostedDiscordMessages(result.toolCalls, channelId)
-        if (crossposts.length) await markCrosspostedMessages(crossposts)
-        if (shouldQuietCrosspostReceipt(result.reply, crossposts)) result.reply = ''
         if (result.threadId) channelSessions.set(channelId, result.threadId)
         // App-server usage is already the sum of every model roundtrip in this
         // turn. Only legacy resumed CLI sessions report a cumulative snapshot
@@ -1995,6 +1992,13 @@ async function handleUserMessage(
       throwIfStopped()
       result = await apiRespond()
     }
+
+    // The destination post, once accepted by Discord, is the answer.  Do this
+    // after both engine branches so API-engine channels follow the same quiet
+    // crosspost contract as Codex rather than leaking a delivery receipt.
+    const crossposts = crosspostedDiscordMessages(result.toolCalls, channelId)
+    if (crossposts.length) await markCrosspostedMessages(crossposts)
+    if (shouldQuietCrosspostReceipt(result.reply, crossposts)) result.reply = ''
 
     // Let the conversation model resolve references before the image-only backend runs.
     const imageRequest = codexFailureLifecycle ? null : parseImageRequest(result.reply)
