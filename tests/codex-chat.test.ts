@@ -306,6 +306,38 @@ test('toolCallsFromCompletedItem: maps file changes per path', () => {
   ])
 })
 
+test('toolCallsFromCompletedItem: extracts text from structured MCP results', () => {
+  const calls = toolCallsFromCompletedItem({
+    type: 'mcp_tool_call',
+    tool: 'vecgrep.list_corpora',
+    arguments: { include_hidden: true },
+    status: 'completed',
+    result: { content: [{ type: 'text', text: 'chats\nnotes\ntodos' }] },
+  })
+
+  assert.deepEqual(calls, [{
+    name: 'vecgrep.list_corpora',
+    args: { include_hidden: true },
+    durationMs: 0,
+    resultPreview: 'chats notes todos',
+    resultLines: 3,
+    failed: false,
+  }])
+})
+
+test('toolCallsFromCompletedItem: falls back to JSON for non-content MCP results', () => {
+  const calls = toolCallsFromCompletedItem({
+    type: 'mcp_tool_call',
+    tool: 'vecgrep.browse',
+    arguments: {},
+    status: 'completed',
+    result: { corpus: 'chats', channel: '150977' },
+  })
+
+  assert.equal(calls[0].resultPreview, '{"corpus":"chats","channel":"150977"}')
+  assert.doesNotMatch(calls[0].resultPreview, /object Object/)
+})
+
 test('codexTimeoutMs: recovery wording cannot shorten a turn', () => {
   assert.equal(
     codexTimeoutMs({ userMessage: "Where'd ya go, did token limits choke you", extraText: '' }),

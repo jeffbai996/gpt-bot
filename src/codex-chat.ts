@@ -258,6 +258,26 @@ const countOutputLines = (x: unknown) => {
   return t ? t.split('\n').length : 0
 }
 
+// Codex reports MCP tool results as structured objects (typically the MCP
+// `{content: [{type: 'text', text}, ...]}` shape), not plain strings — stringify
+// naively and you get `[object Object]` in the trace instead of the payload.
+function stringifyMcpResult(result: unknown): string {
+  if (typeof result === 'string') return result
+  if (result == null) return ''
+  const content = (result as any)?.content
+  if (Array.isArray(content)) {
+    const text = content
+      .map((c: any) => (c && typeof c === 'object' && c.type === 'text' ? String(c.text ?? '') : JSON.stringify(c)))
+      .join('\n')
+    if (text) return text
+  }
+  try {
+    return JSON.stringify(result)
+  } catch {
+    return String(result)
+  }
+}
+
 // Strip codex's `/bin/bash -lc '<inner>'` wrapper + basename the leading path.
 function cleanCmd(raw: string): string {
   const m = raw.match(/-l?c\s+'([\s\S]*)'\s*$/)
@@ -294,14 +314,17 @@ export function toolCallsFromCompletedItem(it: any): ToolCall[] {
         resultPreview: clip2(it.result ?? it.aggregated_output, 200),
         failed: false,
       }]
-    case 'mcp_tool_call':
+    case 'mcp_tool_call': {
+      const resultText = stringifyMcpResult(it.result)
       return [{
         name: clip2(it.tool ?? it.name ?? 'mcp', 40) || 'mcp',
         args: typeof it.arguments === 'object' && it.arguments ? it.arguments : {},
         durationMs: 0,
-        resultPreview: clip2(it.result, 200),
+        resultPreview: clip2(resultText, 200),
+        resultLines: countOutputLines(resultText),
         failed: it.status ? it.status !== 'completed' : false,
       }]
+    }
     default:
       return []
   }
