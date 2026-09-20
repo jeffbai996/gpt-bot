@@ -69,7 +69,7 @@ test('collapse narration stays beneath its paginated trace stack', async () => {
   assert.ok(rehomeStart >= 0)
   assert.match(rehome, /traceChannel\.send\(content\)/)
   assert.match(rehome, /previous\.delete\(\)/)
-  assert.match(flush, /flags\.trace === 'collapse' && appendedTraceCard/)
+  assert.match(flush, /\(flags\.trace === 'collapse' \|\| flags\.trace === 'live'\) && appendedTraceCard/)
   assert.match(flush, /await rehomeLiveWorkBelowTrace\(traceChannel\)/)
   assert.match(flush, /liveTraceMsgs\[i\]\.content !== cards\[i\]/)
   assert.ok(

@@ -1565,7 +1565,15 @@ async function handleUserMessage(
         await stale.delete().catch(() => {})
       }
       liveTraceMsgs = liveTraceMsgs.slice(0, cards.length)
-      if (flags.trace === 'collapse' && appendedTraceCard) await rehomeLiveWorkBelowTrace(traceChannel)
+      // `live` rehomes too (2026-09-20). Only `collapse` did, so a live
+      // channel appended the trace BELOW the answer and left it there —
+      // Discord orders by post time, and the trace card is created when
+      // the first tool runs, which can be after the model has spoken.
+      // Reposting the work card under the trace is what puts the reasoning
+      // above the output, and a live trace is the one a reader keeps.
+      if ((flags.trace === 'collapse' || flags.trace === 'live') && appendedTraceCard) {
+        await rehomeLiveWorkBelowTrace(traceChannel)
+      }
     })().catch(() => {
       // Trace display is diagnostic only; never fail the user turn over Discord.
     }).finally(() => {
