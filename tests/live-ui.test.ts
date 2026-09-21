@@ -56,10 +56,10 @@ test('renders heartbeat status in the same small gray style as token counters', 
   )
 })
 
-test('keeps the thinking header above plain live progress', () => {
+test('keeps the thinking header above quoted live progress', () => {
   assert.equal(
     formatLiveWorkMessage({ effortLabel: 'thinking with max effort', detail: 'Checking the renderer.' }),
-    '💭 ✻ **thinking with max effort…**\nChecking the renderer.',
+    '💭 ✻ **thinking with max effort…**\n> Checking the renderer.',
   )
 })
 
@@ -91,7 +91,7 @@ test('keeps the effort header and renders the latest reasoning one-liner beneath
       effortLabel: 'thinking with high effort',
       headline: 'Investigating hidden transition class toggling',
     }),
-    '💭 ✻ **thinking with high effort…**\n🧠 *investigating hidden transition class toggling*',
+    '💭 ✻ **thinking with high effort…**\n> 🧠 *investigating hidden transition class toggling*',
   )
 })
 
@@ -104,17 +104,17 @@ test('renders the spinner frame and reasoning description in the same message ti
       spinnerGlyph: '✶',
       spinnerDots: '..',
     }),
-    '💭 ✶ **thinking with high effort..**\n🧠 *checking discord edit ownership*\nInspecting the live renderer.',
+    '💭 ✶ **thinking with high effort..**\n> 🧠 *checking discord edit ownership*\n> Inspecting the live renderer.',
   )
 })
 
-test('narration renders beneath thinking without quote markers', () => {
+test('narration renders beneath thinking as a quote block', () => {
   assert.equal(
     formatLiveWorkMessage({
       effortLabel: 'thinking with high effort',
       detail: 'Inspecting the live renderer.',
     }),
-    '💭 ✻ **thinking with high effort…**\nInspecting the live renderer.',
+    '💭 ✻ **thinking with high effort…**\n> Inspecting the live renderer.',
   )
 })
 
@@ -131,9 +131,9 @@ test('collapse narration keeps distinct entries in arrival order', () => {
     }),
     [
       '💭 ✻ **thinking with high effort…**',
-      'Checking the first path.',
-      '',
-      'Checking the second path.',
+      '> Checking the first path.',
+      '> \u200b',
+      '> Checking the second path.',
     ].join('\n'),
   )
 })
@@ -145,7 +145,7 @@ test('collapses completed reasoning into one latest in-place brain line', () => 
       'Comparing the second failure mode',
       'Fixing the actual edit owner',
     ].join('\n')),
-    '💭 **Thinking:**\n🧠 *fixing the actual edit owner*',
+    '💭 **Thinking:**\n> 🧠 *fixing the actual edit owner*',
   )
 })
 
@@ -155,7 +155,7 @@ test('completed live reasoning keeps the brain line under the thought duration',
       'Fixing the actual edit owner',
       '💭 ✓ **thought for 19s**',
     ),
-    '💭 ✓ **thought for 19s**\n🧠 *fixing the actual edit owner*',
+    '💭 ✓ **thought for 19s**\n> 🧠 *fixing the actual edit owner*',
   )
 })
 
@@ -167,9 +167,9 @@ test('collapse mode accumulates the whole reasoning trace line by line', () => {
     ]),
     [
       '💭 **Thinking:**',
-      '🧠 *checking the first failure mode*',
-      '🧠 *comparing the second failure mode*',
-      '🧠 *fixing the actual edit owner*',
+      '> 🧠 *checking the first failure mode*',
+      '> 🧠 *comparing the second failure mode*',
+      '> 🧠 *fixing the actual edit owner*',
     ].join('\n'),
   )
 })
@@ -182,8 +182,8 @@ test('completed collapse reasoning keeps every brain line under the thought dura
     ),
     [
       '💭 ✓ **thought for 19s**',
-      '🧠 *first pass*',
-      '🧠 *second pass*',
+      '> 🧠 *first pass*',
+      '> 🧠 *second pass*',
     ].join('\n'),
   )
 })
@@ -196,8 +196,8 @@ test('live work message renders accumulated reasoning without replacing old line
     }),
     [
       '💭 ✻ **thinking with high effort…**',
-      '🧠 *first pass*',
-      '🧠 *second pass*',
+      '> 🧠 *first pass*',
+      '> 🧠 *second pass*',
     ].join('\n'),
   )
 })
@@ -239,28 +239,39 @@ test('keeps commentary above the compact heartbeat row', () => {
       detail: 'Checking the actual repos.',
       footer: '`✻ cogitating · 33s`',
     }),
-    '💭 ✻ **thinking…**\nChecking the actual repos.\n\n`✻ cogitating · 33s`',
+    '💭 ✻ **thinking…**\n> Checking the actual repos.\n\n`✻ cogitating · 33s`',
   )
 })
 
-test('renders multiline commentary without quote markers', () => {
+test('renders multiline commentary entirely inside one quote block', () => {
   const message = formatLiveWorkMessage({
     effortLabel: 'thinking',
     detail: 'A first line\nand a second line',
   })
 
-  assert.match(message, /\nA first line\nand a second line/)
-  assert.doesNotMatch(message, /^>/gm)
+  assert.match(message, /\n> A first line\n> and a second line/)
+  assert.equal(message.match(/^> /gm)?.length, 2)
 })
 
-test('strips model-supplied quote markers from reasoning traces', () => {
+test('normalizes model-supplied quote markers into one clean quote block', () => {
   const message = formatLiveWorkMessage({
     effortLabel: 'thinking',
     reasoningTrace: ['> First pass\n>\n> Second pass'],
   })
 
-  assert.match(message, /🧠 \*first pass\*\n🧠 \*second pass\*/)
-  assert.doesNotMatch(message, /^>/gm)
+  assert.match(message, /> 🧠 \*first pass\*\n> 🧠 \*second pass\*/)
+  assert.doesNotMatch(message, /^>\s*>/gm)
+  assert.doesNotMatch(message, /^>\s*$/gm)
+})
+
+test('keeps blank narration spacing quoted without emitting a bare marker', () => {
+  const message = formatLiveWorkMessage({
+    effortLabel: 'thinking',
+    detail: '> First paragraph\n>\n> Second paragraph',
+  })
+
+  assert.match(message, /> First paragraph\n> \u200b\n> Second paragraph/)
+  assert.doesNotMatch(message, /^>\s*$/gm)
 })
 
 test('clips progress before the footer instead of dropping the heartbeat', () => {
