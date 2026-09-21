@@ -45,7 +45,7 @@ export function formatReasoningSnapshot(
 ): string {
   const headline = latestReasoningHeadline(text).toLocaleLowerCase('en-US')
   return headline
-    ? `${header}\n> 🧠 *${headline}*`
+    ? `${header}\n🧠 *${headline}*`
     : header
 }
 
@@ -54,7 +54,7 @@ export function formatReasoningTraceSnapshot(
   header: string = '💭 **Thinking:**',
 ): string {
   const lines = reasoningTraceLines(parts)
-    .map(line => `> 🧠 *${line.toLocaleLowerCase('en-US')}*`)
+    .map(line => `🧠 *${line.toLocaleLowerCase('en-US')}*`)
   return [header, ...lines].join('\n')
 }
 
@@ -147,25 +147,30 @@ export function formatLiveWorkMessage({
   const header = `💭 ${spinnerGlyph} **${effortLabel}${spinnerDots}**`
   const cleanHeadline = headline.trim().toLocaleLowerCase('en-US')
   const accumulated = reasoningTraceLines(reasoningTrace)
-    .map(line => `> 🧠 *${line.toLocaleLowerCase('en-US')}*`)
+    .map(line => `🧠 *${line.toLocaleLowerCase('en-US')}*`)
   const reasoning = accumulated.length
     ? `\n${accumulated.join('\n')}`
-    : cleanHeadline ? `\n> 🧠 *${cleanHeadline}*` : ''
+    : cleanHeadline ? `\n🧠 *${cleanHeadline}*` : ''
   const cleanDetail = narrationTrace.length
-    ? narrationTrace.map(part => part.trim()).filter(Boolean).join('\n\n')
-    : detail.trim()
+    ? narrationTrace.map(cleanNarrationPart).filter(Boolean).join('\n\n')
+    : cleanNarrationPart(detail)
   const cleanFooter = footer.trim()
   const suffix = cleanFooter ? `\n\n${cleanFooter}` : ''
   const heading = header + reasoning
   if (!cleanDetail) return heading + suffix
 
   const prefix = `${heading}\n`
-  // Live narration is status, not answer text. Keep every line inside Discord's
-  // quote treatment so it cannot read like a premature bot reply.
-  const quotedDetail = cleanDetail.split(/\r?\n/).map(line => line ? `> ${line}` : '>').join('\n')
   const available = Math.max(1, maxLength - prefix.length - suffix.length)
-  const clippedDetail = quotedDetail.length > available
-    ? quotedDetail.slice(0, Math.max(0, available - 1)) + '…'
-    : quotedDetail
+  const clippedDetail = cleanDetail.length > available
+    ? cleanDetail.slice(0, Math.max(0, available - 1)) + '…'
+    : cleanDetail
   return prefix + clippedDetail + suffix
+}
+
+function cleanNarrationPart(text: string): string {
+  return text
+    .trim()
+    .split(/\r?\n/)
+    .map(line => line.replace(/^>\s?/, ''))
+    .join('\n')
 }
