@@ -5,6 +5,7 @@ interface LiveWorkMessageOptions {
   reasoningTrace?: string[]
   detail?: string
   narrationTrace?: string[]
+  quoteDetail?: boolean
   footer?: string
   spinnerGlyph?: string
   spinnerDots?: string
@@ -136,6 +137,7 @@ export function formatLiveWorkMessage({
   reasoningTrace = [],
   detail = '',
   narrationTrace = [],
+  quoteDetail = true,
   footer = '',
   spinnerGlyph = HEARTBEAT_GLYPHS[0],
   spinnerDots = '…',
@@ -160,14 +162,16 @@ export function formatLiveWorkMessage({
   if (!cleanDetail) return heading + suffix
 
   const prefix = `${heading}\n`
-  const quotedDetail = cleanDetail
-    .split(/\r?\n/)
-    .map(line => line ? `> ${line}` : '> \u200b')
-    .join('\n')
+  const renderedDetail = quoteDetail
+    ? cleanDetail
+      .split(/\r?\n/)
+      .map(line => line ? `> ${line}` : '> \u200b')
+      .join('\n')
+    : cleanDetail
   const available = Math.max(1, maxLength - prefix.length - suffix.length)
-  const clippedDetail = quotedDetail.length > available
-    ? quotedDetail.slice(0, Math.max(0, available - 1)) + '…'
-    : quotedDetail
+  const clippedDetail = renderedDetail.length > available
+    ? renderedDetail.slice(0, Math.max(0, available - 1)) + '…'
+    : renderedDetail
   return prefix + clippedDetail + suffix
 }
 

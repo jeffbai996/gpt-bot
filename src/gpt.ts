@@ -1287,7 +1287,7 @@ async function handleUserMessage(
   // leave crash cleanup; collapse mode schedules their retirement at turn end.
   const retireNarration = async (text: string): Promise<void> => {
     if (!message.channel.isSendable()) return
-    const blocks = narrationBlocks(text)
+    const blocks = narrationBlocks(text, flags.thinking !== 'live')
     const prior = workMessage && workMessage.id === narrationMessageId && !targetMessage
       ? workMessage : null
     if (prior) {
@@ -1332,6 +1332,7 @@ async function handleUserMessage(
         headline: accumulatesReasoning ? '' : liveHeadline,
         reasoningTrace: accumulatesReasoning ? liveReasoningTrace : [],
         detail: renderedProgress,
+        quoteDetail: flags.thinking !== 'live',
         footer: liveFooter,
         spinnerGlyph,
         spinnerDots,
@@ -1711,7 +1712,6 @@ async function handleUserMessage(
     }
     if (event.type === 'reasoning_progress') {
       liveActivity = 'thinking'
-      if (flags.thinking === 'live') narrationHistory.clearCurrent()
       void lifecycle.reasoning()
       const reasoningIsVisible = flags.thinking !== 'off'
       if (flags.thinking === 'on' || flags.thinking === 'collapse') {

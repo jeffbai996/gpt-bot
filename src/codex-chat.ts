@@ -94,7 +94,8 @@ const VECGREP_BIN = process.env.GPT_VECGREP_BIN ||
 const LIVE_PROGRESS_INSTRUCTION =
   'Keep the Discord user visibly informed while you work: send a concise commentary update early, ' +
   'then another whenever the activity changes or roughly once a minute during long work. Commentary ' +
-  'is progress, not the final answer; do not expose private hidden reasoning.'
+  'is progress, not the final answer; do not expose private hidden reasoning. Write commentary in the ' +
+  "user's language; when the user writes Chinese, emit the progress updates in Chinese too."
 
 export interface CodexChatInput {
   systemPrompt: string

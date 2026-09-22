@@ -40,6 +40,10 @@ test('narration preserves its original text formatting without added fences', ()
   assert.equal(blocks.map(block => block.slice(4)).join(''), long)
 })
 
+test('plain narration blocks preserve Chinese progress without quoting it', () => {
+  assert.deepEqual(narrationBlocks('正在检查服务日志。', false), ['正在检查服务日志。'])
+})
+
 test('failed demotion remains retryable', async () => {
   const history = new NarrationHistory()
   history.accept('first')
@@ -63,14 +67,20 @@ test('production demotion edits the original message and removes it from crash c
     send: async ({ content }: { content: string }) => { contents.set(`new-${contents.size}`, content) },
   }
   // Execute the actual production callback with a Discord transport double.
-  const factory = new Function('message', 'pendingPlaceholders', 'narrationBlocks', 'prior', transpile(`
+  const factory = new Function('message', 'pendingPlaceholders', 'narrationBlocks', 'prior', 'flags', transpile(`
     const narrationHistory = { trackRetired: () => {} };
     let workMessage = prior, narrationMessageId = prior.id, targetMessage = null;
     let placeholderId = prior.id, lastEditedText = 'old';
     ${source.slice(start, end)}
     return { retireNarration, current: () => workMessage };
   `))
-  const owner = factory({ channel }, { untrack: (id: string) => tracked.delete(id) }, narrationBlocks, prior)
+  const owner = factory(
+    { channel },
+    { untrack: (id: string) => tracked.delete(id) },
+    narrationBlocks,
+    prior,
+    { thinking: 'collapse' },
+  )
   const history = new NarrationHistory()
   history.accept('first')
   await history.advance(owner.retireNarration)
@@ -126,14 +136,14 @@ for (const mode of ['on', 'collapse', 'live', 'off'] as const) {
     await history.advance(retire)
     assert.equal(history.current, 'third')
     await history.finish(retire)
-    assert.deepEqual(retired, mode === 'on' || mode === 'collapse' ? ['first', 'second', 'third'] : [])
+    assert.deepEqual(retired, mode === 'off' ? [] : ['first', 'second', 'third'])
   })
 
-  test(`${mode} schedules only its own retired quotes for collapse`, () => {
+  test(`${mode} schedules transient retired progress for cleanup`, () => {
     const history = new NarrationHistory(mode)
     history.trackRetired({ id: 'quote', channelId: 'channel' })
     const actions = history.cleanupActions(1000, 60000)
-    assert.deepEqual(actions, mode === 'collapse'
+    assert.deepEqual(actions, mode === 'collapse' || mode === 'live'
       ? [{ channelId: 'channel', messageId: 'quote', action: 'delete', dueAt: 61000 }] : [])
     assert.deepEqual(history.cleanupActions(2000, 60000), [])
   })

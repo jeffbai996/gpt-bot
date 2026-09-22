@@ -118,6 +118,18 @@ test('narration renders beneath thinking as a quote block', () => {
   )
 })
 
+test('live narration stays plain while the brain line remains quoted', () => {
+  assert.equal(
+    formatLiveWorkMessage({
+      effortLabel: 'thinking with high effort',
+      headline: 'Checking Discord edit ownership',
+      detail: '正在检查渲染器。',
+      quoteDetail: false,
+    }),
+    '💭 ✻ **thinking with high effort…**\n> 🧠 *checking discord edit ownership*\n正在检查渲染器。',
+  )
+})
+
 test('collapse narration keeps distinct entries in arrival order', () => {
   let trace: string[] = []
   trace = appendNarrationTrace(trace, 'Checking the first path.')

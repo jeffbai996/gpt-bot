@@ -97,6 +97,10 @@ test('codex commentary: surfaces in-flight progress text', () => {
     type: 'item.completed',
     item: { type: 'agent_message', text: 'checking the service logs now' },
   }), 'checking the service logs now')
+  assert.equal(commentaryProgress({
+    type: 'item.completed',
+    item: { type: 'agent_message', phase: 'commentary', text: '正在检查服务日志。' },
+  }), '正在检查服务日志。')
 })
 
 test('codex reasoning: surfaces explicit reasoning summaries, never encrypted thought data', () => {

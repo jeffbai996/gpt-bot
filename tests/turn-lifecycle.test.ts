@@ -95,7 +95,7 @@ test('rolling live trace is reposted beneath newer bot output without duplicates
   assert.match(finalRender, /await rehomeLiveTraceAtBottom\(/)
 })
 
-test('narration mode controls retention and live reasoning replaces current progress', async () => {
+test('narration mode controls retention and live reasoning preserves current progress', async () => {
   const source = await readFile(new URL('../src/gpt.ts', import.meta.url), 'utf8')
   const progressStart = source.indexOf("if (event.type === 'progress')")
   const progressEnd = source.indexOf("if (event.type === 'reasoning_progress')", progressStart)
@@ -105,9 +105,11 @@ test('narration mode controls retention and live reasoning replaces current prog
   const reasoningBranch = source.slice(reasoningStart, reasoningEnd)
 
   assert.match(progressBranch, /narrationHistory\.accept\(event\.reply\)/)
-  assert.match(reasoningBranch, /if \(flags\.thinking === 'live'\) narrationHistory\.clearCurrent\(\)/)
+  assert.doesNotMatch(reasoningBranch, /narrationHistory\.clearCurrent\(\)/)
   assert.match(source, /new NarrationHistory\(flags\.thinking\)/)
   assert.match(source, /await narrationHistory\.finish\(retireNarration, finalReply\)/)
+  assert.match(source, /narrationBlocks\(text, flags\.thinking !== 'live'\)/)
+  assert.match(source, /quoteDetail: flags\.thinking !== 'live'/)
 })
 
 test('heartbeat never invents a generic tool-status narration line', async () => {

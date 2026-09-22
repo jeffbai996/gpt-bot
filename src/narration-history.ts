@@ -1,8 +1,9 @@
 import { chunk } from './chunk.ts'
 import { redactTraceSensitiveData } from './tool-trace.ts'
 
-export function narrationBlocks(text: string): string[] {
-  return chunk(redactTraceSensitiveData(text), 1896).map(block => `>>> ${block}`)
+export function narrationBlocks(text: string, quoted = true): string[] {
+  const blocks = chunk(redactTraceSensitiveData(text), quoted ? 1896 : 1900)
+  return quoted ? blocks.map(block => `>>> ${block}`) : blocks
 }
 
 /** The render owner serializes advance/finish with Discord edits. */
@@ -12,7 +13,9 @@ export class NarrationHistory {
   private retired = new Map<string, string>()
 
   trackRetired(message: { id: string; channelId: string }): void {
-    if (this.mode === 'collapse') this.retired.set(message.id, message.channelId)
+    if (this.mode === 'collapse' || this.mode === 'live') {
+      this.retired.set(message.id, message.channelId)
+    }
   }
 
   cleanupActions(now: number, lingerMs: number) {
@@ -29,7 +32,7 @@ export class NarrationHistory {
   }
 
   private get retainsHistory(): boolean {
-    return this.mode === 'on' || this.mode === 'collapse'
+    return this.mode !== 'off'
   }
 
   current = ''
