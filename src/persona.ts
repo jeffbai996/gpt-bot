@@ -1,7 +1,7 @@
 import fs from 'fs/promises'
 import path from 'path'
 import os from 'os'
-import type { PinnedFactsStore } from './pinned-facts.ts'
+import type { PinnedFactsStore } from 'squad-bot-kit/pinned-facts.ts'
 import type { SummaryStore } from './summarization/store.ts'
 
 const DEFAULT_PERSONA = `You are **gpt**, an OpenAI-backed Discord assistant. Be helpful, concise, and match the channel's tone. You can respond with text, an emoji reaction, or both. Keep per-channel context across turns and use only the information available in the conversation or from configured tools.

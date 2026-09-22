@@ -140,7 +140,7 @@ for (const mode of ['on', 'collapse', 'live', 'off'] as const) {
 }
 
 test('collapse quotes expire after the configured timeout even after registry reload', async t => {
-  const { DeferredActions } = await import('../src/deferred-actions.ts')
+  const { DeferredActions } = await import('squad-bot-kit/deferred-actions.ts')
   const { mkdtempSync, rmSync } = await import('node:fs')
   const { tmpdir } = await import('node:os')
   const { join } = await import('node:path')

@@ -5,7 +5,7 @@ import path from 'path'
 import os from 'os'
 import { actionFor, isValidOutboundReactEmoji } from '../src/reactions/vocabulary.ts'
 import { PendingEditsStore } from '../src/reactions/pending-edits.ts'
-import { PinnedFactsStore } from '../src/pinned-facts.ts'
+import { PinnedFactsStore } from 'squad-bot-kit/pinned-facts.ts'
 
 test('actionFor: known emojis map to actions', () => {
   assert.equal(actionFor('🔁'), 'regenerate')

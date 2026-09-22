@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { extensionMime, isLocallyExtractable, officeParserType } from './attachment-text.ts'
 import { extractLocalText, extractOfficeText } from './attachment-worker-client.ts'
-import { animationContactSheet } from './animation-frames.ts'
+import { animationContactSheet } from 'squad-bot-kit/animation-frames.ts'
 
 // 20 MB default cap. Discord's per-attachment max is 25/100/500MB depending
 // on guild boost tier; the smaller cap protects against "user dropped a 4-hour

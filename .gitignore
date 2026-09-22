@@ -14,3 +14,4 @@ README_PRIVATE.md
 # committed. Public repo; these inevitably leak internal infra details.
 docs/superpowers/
 docs/handoff-prompts/
+node_modules
